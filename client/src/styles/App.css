@@ -1,0 +1,31 @@
+@import url("fonts.css?v=3");
+.footer {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    width: 100%; /* 占据整个宽度 */
+    text-align: center;
+    padding: 10px;
+    font-size: 12px;
+}
+@font-face {
+    font-family: 'TypoGraphica';
+    src: url('@/assets/fonts/TypoGraphica.eot?#iefix') format('embedded-opentype'),
+    url('@/assets/fonts/TypoGraphica.woff') format('woff'),
+    url('@/assets/fonts/TypoGraphica.ttf') format('truetype'),
+    url('@/assets/fonts/TypoGraphica.svg#TypoGraphica') format('svg');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'argon';
+    src: url('@/assets/fonts/argon.eot?u6kthm');
+    src: url('@/assets/fonts/argon.eot?u6kthm#iefix') format('embedded-opentype'),
+    url('@/assets/fonts/argon.ttf?u6kthm') format('truetype'),
+    url('@/assets/fonts/argon.woff?u6kthm') format('woff'),
+    url('@/assets/fonts/argon.svg?u6kthm#argon') format('svg');
+    font-weight: normal;
+    font-style: normal;
+    font-display: block;
+}
