@@ -53,7 +53,17 @@ const CellData = sequelize.define('CellData', {
         type: DataTypes.DOUBLE,
         allowNull: true,
         field: 'Latitude'
-    }
+    },
+    CreateTime: {
+        type: DataTypes.DATE,
+        allowNull: false,
+        field: 'CreateTime'
+    },
+    UpdateTime: {
+        type: DataTypes.DATE,
+        allowNull: false,
+        field: 'UpdateTime'
+    },
 }, {
     tableName: 'CellData',
     timestamps: false, // 不使用时间戳字段
@@ -70,7 +80,20 @@ const CellData = sequelize.define('CellData', {
         {
             fields: ['Freq']
         }
-    ]
+    ],
+    hooks: {
+        beforeValidate: (record) => {
+            record.CreateTime = new Date();
+            record.UpdateTime = new Date();
+        },
+        beforeCreate(record) {
+            record.CreateTime = new Date();
+            record.UpdateTime = new Date();
+        },
+        beforeUpdate: (record) => {
+            record.UpdateTime = new Date();
+        }
+    }
 });
 
 module.exports = CellData;

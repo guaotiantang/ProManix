@@ -70,7 +70,7 @@
                 >
                   <div class="box-line" style="margin: 6px 0">
                     <span style="font-size: 13px">
-                      IP: {{ formatDate(item.AddTime) }}<br>
+                      IP: {{ item.Address }}<br>
                       协议类型: {{ item.Protocol }}
                     </span>
                   </div>

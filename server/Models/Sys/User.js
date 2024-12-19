@@ -39,7 +39,7 @@ const User = sequelize.define('User', {
     tableName: 'User',
     freezeTableName: true,
     underscored: false,
-    paranoid: true,
+    paranoid: true, // 软删除
     hooks: {
         beforeValidate: (user) => {
             user.CreateTime = new Date();

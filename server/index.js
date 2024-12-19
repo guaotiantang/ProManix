@@ -39,7 +39,7 @@ app.use((err, res, next) => {
 
 // 代理中间件配置
 const httpProxyConfigs = [
-    {url: "http://localhost:3001", route: "/mparser", pathRewrite: {}, useAuth: true}
+    {url: "http://localhost:9002", route: "/mparser", pathRewrite: {}, useAuth: true}
 ];
 
 // 创建通用的代理配置

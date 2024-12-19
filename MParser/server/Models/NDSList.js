@@ -70,15 +70,32 @@ const NDSList = sequelize.define('NDSList', {
         defaultValue: 1,
         field: 'Switch'
     },
-    AddTime: {
+    CreateTime: {
         type: DataTypes.DATE,
         allowNull: false,
-        defaultValue: DataTypes.NOW,
-        field: 'AddTime'
-    }
+        field: 'CreateTime'
+    },
+    UpdateTime: {
+        type: DataTypes.DATE,
+        allowNull: false,
+        field: 'UpdateTime'
+    },
 }, {
     tableName: 'NDSList',
-    timestamps: false
+    timestamps: false,
+    hooks: {
+        beforeValidate: (record) => {
+            record.CreateTime = new Date();
+            record.UpdateTime = new Date();
+        },
+        beforeCreate(record) {
+            record.CreateTime = new Date();
+            record.UpdateTime = new Date();
+        },
+        beforeUpdate: (record) => {
+            record.UpdateTime = new Date();
+        }
+    }
 });
 
 module.exports = NDSList;

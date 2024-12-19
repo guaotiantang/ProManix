@@ -8,6 +8,7 @@ const path = require('path');
 const fileUpload = require('express-fileupload');
 const cellDataRouter = require('./APIs/CellData');
 const ndsRouter = require('./APIs/NDS');
+const gatewayRouter = require('./APIs/Gateway');
 
 const app = express();
 app.use(express.json({limit: '50mb'}));
@@ -47,6 +48,7 @@ app.get('/', (req, res) => {
 
 app.use('/celldata',cellDataRouter);
 app.use('/nds',ndsRouter);
+app.use('/gateway', gatewayRouter);
 
 
 // 启动服务器

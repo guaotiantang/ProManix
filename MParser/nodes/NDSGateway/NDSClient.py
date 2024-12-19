@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 
 # 配置日志
-logging.basicConfig(level=logging.ERROR)  # 设置日志级别为INFO, 开发时需要输出logger可设置为DEBUG
+logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
 
 # ZIP 文件格式常量

@@ -4,7 +4,7 @@ import logging
 from typing import Dict, Optional, List, Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from .NDSClient import NDSClient, NDSError
+from NDSClient import NDSClient, NDSError
 
 logger = logging.getLogger(__name__)
 

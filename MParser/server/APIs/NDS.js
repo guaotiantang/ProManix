@@ -1,7 +1,43 @@
 const express = require('express');
 const router = express.Router();
 const NDSList = require('../Models/NDSList');
+const NDSGateways = require('../Models/NDSGateways');
 const { Op } = require('sequelize');
+const axios = require('axios');
+
+// 异步通知函数
+async function notifyPythonServices(action, config) {
+    try {
+        // 获取所有网关
+        const gateways = await NDSGateways.findAll();
+        
+        // 使用 Promise.allSettled 并行发送通知，允许部分失败
+        const notifyPromises = gateways.map(gateway => {
+            const serviceUrl = `http://${gateway.Host}:${gateway.Port}`;
+            return axios.post(`${serviceUrl}/nds/update-pool`, {
+                action,
+                config
+            }).catch(error => {
+                console.warn(`Failed to notify gateway ${serviceUrl}: ${error.message}`);
+                return null; // 失败时返回null，不影响其他通知
+            });
+        });
+
+        // 等待所有通知完成，不关心结果
+        await Promise.allSettled(notifyPromises);
+    } catch (error) {
+        console.error('Error in notification process:', error);
+        // 不抛出错误，让主流程继续执行
+    }
+}
+
+// 包装通知函数，使其在单独的"线程"中执行
+function notifyAsync(action, config) {
+    // 使用 setImmediate 将通知任务放入下一个事件循环
+    setImmediate(async () => {
+        await notifyPythonServices(action, config);
+    });
+}
 
 // 获取列表
 router.get('/list', async (req, res) => {
@@ -25,6 +61,7 @@ router.get('/list', async (req, res) => {
 
         res.json({ total: count, list: rows });
     } catch (error) {
+        console.error('获取列表失败:', error);
         res.status(500).json({ message: error.message });
     }
 });
@@ -34,7 +71,6 @@ router.post('/add', async (req, res) => {
     try {
         const data = req.body;
         
-        // 检查 NDSName 是否已存在
         const existingRecord = await NDSList.findOne({
             where: { NDSName: data.NDSName }
         });
@@ -46,7 +82,6 @@ router.post('/add', async (req, res) => {
             });
         }
 
-        // 创建新记录并返回创建的数据
         const newNDS = await NDSList.create({
             ...data,
             Status: 1,
@@ -54,10 +89,13 @@ router.post('/add', async (req, res) => {
             AddTime: new Date()
         });
 
-        // 获取完整的新记录数据
         const fullRecord = await NDSList.findByPk(newNDS.ID);
 
-        // 确保返回完整的数据结构
+        // 异步通知，不等待结果
+        if (newNDS.Switch === 1) {
+            notifyAsync('add', fullRecord);
+        }
+
         res.json({ 
             message: '新增成功',
             code: 200,
@@ -75,12 +113,11 @@ router.post('/add', async (req, res) => {
 router.post('/update', async (req, res) => {
     try {
         const data = req.body;
-        // 检查更新的 NDSName 是否与其他记录重复
         if (data.NDSName) {
             const existingRecord = await NDSList.findOne({
                 where: { 
                     NDSName: data.NDSName,
-                    ID: { [Op.ne]: data.ID } // 排除自己
+                    ID: { [Op.ne]: data.ID }
                 }
             });
             
@@ -96,7 +133,6 @@ router.post('/update', async (req, res) => {
             where: { ID: data.ID }
         });
         
-        // 获取更新后的完整数据
         const updatedNDS = await NDSList.findByPk(data.ID);
         if (!updatedNDS) {
             return res.status(404).json({ 
@@ -104,11 +140,14 @@ router.post('/update', async (req, res) => {
                 code: 404 
             });
         }
+
+        // 异步通知，不等待结果
+        notifyAsync('update', updatedNDS);
         
         res.json({ 
             message: '更新成功',
             code: 200,
-            data: updatedNDS // 返回更新后的完整数据
+            data: updatedNDS
         });
     } catch (error) {
         res.status(500).json({ 
@@ -133,13 +172,17 @@ router.post('/updateStatus', async (req, res) => {
 
         await NDSList.update(updateData, { where: { ID } });
         
-        // 获取更新后的完整数据
         const updatedNDS = await NDSList.findByPk(ID);
         if (!updatedNDS) {
             return res.status(404).json({ 
                 message: '未找到要更新的记录',
                 code: 404 
             });
+        }
+
+        // 如果Switch发生变化，需要通知Python服务
+        if (Switch !== undefined) {
+            notifyAsync('update', updatedNDS);
         }
         
         res.json({ 
@@ -159,13 +202,19 @@ router.post('/updateStatus', async (req, res) => {
 router.delete('/remove/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await NDSList.destroy({
-            where: { ID: id }
-        });
         
-        if (result === 0) {
+        // 在删除之前获取完整记录用于通知
+        const recordToDelete = await NDSList.findByPk(id);
+        if (!recordToDelete) {
             return res.status(404).json({ message: '未找到要删除的记录' });
         }
+
+        await NDSList.destroy({
+            where: { ID: id }
+        });
+
+        // 异步通知，不等待结果
+        notifyAsync('remove', recordToDelete);
         
         res.json({ message: '删除成功' });
     } catch (error) {
