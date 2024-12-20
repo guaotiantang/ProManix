@@ -11,9 +11,15 @@ const sequelize = new Sequelize(
         logging: false, // 禁用日志输出
         pool: { //连接池配置
             max: 5000, // 连接池最大连接数
-            min: 10, // 连接池最小连接数
+            min: 50, // 连接池最小连接数
             acquire: 30000, // 连接池获取连接的最大等待时间，单位毫秒
             idle: 10000 // 连接池中连接的空闲时间，单位毫秒
+        },
+        timezone: '+08:00',  // 设置时区为 UTC+8
+        dialectOptions: {
+            // 确保从数据库读取的时间也是正确的时区
+            dateStrings: true,
+            typeCast: true
         }
     }
 );

@@ -16,9 +16,10 @@ class PoolConfig:
     port: int
     user: str
     passwd: str
-    pool_size: int = 5  # 每个服务器的连接数
+    pool_size: int = 2  # 每个服务器的连接数
     max_idle_time: int = 300  # 最大空闲时间(秒)
     retry_count: int = 3  # 重试次数
+    wait_timeout: int = 3600  # 等待连接的超时时间(秒)，默认1小时
 
 @dataclass
 class ConnectionInfo:
@@ -33,13 +34,23 @@ class NDSPool:
     def __init__(self):
         self._pools: Dict[str, List[ConnectionInfo]] = {}  # server_id -> connections
         self._configs: Dict[str, PoolConfig] = {}  # server_id -> config
-        self._lock = asyncio.Lock()
+        self._locks: Dict[str, asyncio.Lock] = {}  # server_id -> lock
+        self._global_lock = asyncio.Lock()  # 用于修改字典结构的全局锁
         self._cleanup_task: Optional[asyncio.Task] = None
+
+    async def _get_server_lock(self, server_id: str) -> asyncio.Lock:
+        """获取服务器专用的锁"""
+        async with self._global_lock:
+            if server_id not in self._locks:
+                self._locks[server_id] = asyncio.Lock()
+            return self._locks[server_id]
 
     def add_server(self, server_id: str, config: PoolConfig) -> None:
         """添加服务器配置"""
         self._configs[server_id] = config
         self._pools[server_id] = []
+        if server_id not in self._locks:
+            self._locks[server_id] = asyncio.Lock()
         
         if not self._cleanup_task:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -62,36 +73,31 @@ class NDSPool:
         if server_id not in self._configs:
             raise NDSError(f"Server {server_id} not configured")
 
-        async with self._lock:
-            # 查找空闲连接
-            for conn in self._pools[server_id]:
-                if not conn.in_use:
-                    # 检查连接是否有效
-                    try:
-                        if await conn.client.check_connect():
-                            conn.in_use = True
-                            conn.last_used = datetime.now()
-                            return conn
-                    except Exception as e:
-                        logger.warning(f"Connection check failed: {e}")
-                        await self._close_connection(conn)
-                        self._pools[server_id].remove(conn)
-
-            # 如果没有可用连接且未达到池上限，创建新连接
-            config = self._configs[server_id]
-            if len(self._pools[server_id]) < config.pool_size:
-                client = await self._create_client(server_id)
-                conn = ConnectionInfo(client=client, in_use=True)
-                self._pools[server_id].append(conn)
-                return conn
-
-            # 等待有连接释放
-            while True:
+        lock = await self._get_server_lock(server_id)
+        async with lock:
+            while True:  # 持续等待直到有可用连接
+                # 查找空闲连接
                 for conn in self._pools[server_id]:
                     if not conn.in_use:
-                        conn.in_use = True
-                        conn.last_used = datetime.now()
-                        return conn
+                        try:
+                            if await conn.client.check_connect():
+                                conn.in_use = True
+                                conn.last_used = datetime.now()
+                                return conn
+                        except Exception as e:
+                            logger.warning(f"Connection check failed: {e}")
+                            await self._close_connection(conn)
+                            self._pools[server_id].remove(conn)
+
+                # 如果没有可用连接且未达到池上限，创建新连接
+                config = self._configs[server_id]
+                if len(self._pools[server_id]) < config.pool_size:
+                    client = await self._create_client(server_id)
+                    conn = ConnectionInfo(client=client, in_use=True)
+                    self._pools[server_id].append(conn)
+                    return conn
+
+                # 等待一段时间后重试
                 await asyncio.sleep(0.1)
 
     async def _close_connection(self, conn: ConnectionInfo) -> None:
@@ -112,35 +118,44 @@ class NDSPool:
 
     async def _cleanup_idle_connections(self) -> None:
         """清理空闲连接"""
-        async with self._lock:
-            now = datetime.now()
-            for server_id, connections in self._pools.items():
-                max_idle = self._configs[server_id].max_idle_time
-                idle_limit = now - timedelta(seconds=max_idle)
-                
-                to_remove = []
-                for conn in connections:
-                    if not conn.in_use and conn.last_used < idle_limit:
-                        await self._close_connection(conn)
-                        to_remove.append(conn)
-                
-                for conn in to_remove:
-                    connections.remove(conn)
+        # 先获取所有需要处理的服务器ID
+        async with self._global_lock:
+            server_ids = list(self._pools.keys())
+        
+        # 逐个处理每个服务器的连接
+        for server_id in server_ids:
+            try:
+                lock = await self._get_server_lock(server_id)
+                async with lock:
+                    if server_id not in self._pools:  # 再次检查，因为可能已被删除
+                        continue
+                        
+                    connections = self._pools[server_id]
+                    max_idle = self._configs[server_id].max_idle_time
+                    idle_limit = datetime.now() - timedelta(seconds=max_idle)
+                    
+                    to_remove = []
+                    for conn in connections:
+                        if not conn.in_use and conn.last_used < idle_limit:
+                            await self._close_connection(conn)
+                            to_remove.append(conn)
+                    
+                    for conn in to_remove:
+                        connections.remove(conn)
+            except Exception as e:
+                logger.error(f"Error cleaning up connections for server {server_id}: {e}")
 
     @asynccontextmanager
     async def get_client(self, server_id: str):
-        """获取客户端连接的上下文管理器
-        
-        使用示例:
-            async with pool.get_client("server1") as client:
-                await client.some_operation()
-        """
+        """获取客户端连接的上下文管理器"""
         conn = await self._get_connection(server_id)
         try:
             yield conn.client
         finally:
-            conn.in_use = False
-            conn.last_used = datetime.now()
+            lock = await self._get_server_lock(server_id)
+            async with lock:
+                conn.in_use = False
+                conn.last_used = datetime.now()
 
     async def close(self) -> None:
         """关闭连接池"""
@@ -151,76 +166,46 @@ class NDSPool:
             except asyncio.CancelledError:
                 pass
 
-        async with self._lock:
-            for connections in self._pools.values():
-                for conn in connections:
-                    await self._close_connection(conn)
-            self._pools.clear() 
+        async with self._global_lock:
+            for server_id in list(self._pools.keys()):
+                await self.remove_server(server_id)
 
     async def remove_server(self, server_id: str) -> bool:
-        """移除服务器配置及其所有连接
-        
-        Args:
-            server_id: 服务器ID
-            
-        Returns:
-            bool: 是否成功移除
-            
-        Raises:
-            NDSError: 移除过程中发生错误
-        """
+        """移除服务器配置及其所有连接"""
         if server_id not in self._configs:
             return False
             
-        async with self._lock:
-            try:
-                # 关闭所有连接
-                for conn in self._pools[server_id]:
-                    await self._close_connection(conn)
-                
-                # 移除配置和连接池
-                del self._pools[server_id]
-                del self._configs[server_id]
-                
-                return True
-            except Exception as e:
-                logger.error(f"Error removing server {server_id}: {e}")
-                raise NDSError(f"Failed to remove server {server_id}: {str(e)}")
+        # 先获取全局锁
+        async with self._global_lock:
+            # 获取服务器锁（如果存在）
+            server_lock = self._locks.get(server_id)
+            if server_lock:
+                async with server_lock:
+                    try:
+                        # 关闭所有连接
+                        for conn in self._pools[server_id]:
+                            await self._close_connection(conn)
+                        
+                        # 移除配置和连接池
+                        self._pools.pop(server_id, None)
+                        self._configs.pop(server_id, None)
+                        self._locks.pop(server_id, None)
+                        
+                        return True
+                    except Exception as e:
+                        logger.error(f"Error removing server {server_id}: {e}")
+                        raise NDSError(f"Failed to remove server {server_id}: {str(e)}")
 
     def get_server_config(self, server_id: str) -> Optional[PoolConfig]:
-        """获取服务器配置
-        
-        Args:
-            server_id: 服务器ID
-            
-        Returns:
-            Optional[PoolConfig]: 服务器配置，不存在时返回None
-        """
+        """获取服务器配置"""
         return self._configs.get(server_id)
 
     def get_server_ids(self) -> List[str]:
-        """获取所有服务器ID列表
-        
-        Returns:
-            List[str]: 服务器ID列表
-        """
+        """获取所有服务器ID列表"""
         return list(self._configs.keys())
 
     def get_pool_status(self, server_id: str) -> Dict[str, Any]:
-        """获取连接池状态
-        
-        Args:
-            server_id: 服务器ID
-            
-        Returns:
-            Dict[str, Any]: 包含以下信息：
-                - total_connections: 当前连接总数
-                - active_connections: 正在使用的连接数
-                - idle_connections: 空闲连接数
-                
-        Raises:
-            NDSError: 服务器ID不存在
-        """
+        """获取连接池状态"""
         if server_id not in self._configs:
             raise NDSError(f"Server {server_id} not configured")
             
@@ -235,11 +220,7 @@ class NDSPool:
         }
 
     def get_all_pool_status(self) -> Dict[str, Dict[str, Any]]:
-        """获取所有连接池状态
-        
-        Returns:
-            Dict[str, Dict[str, Any]]: server_id -> 状态信息的映射
-        """
+        """获取所有连接池状态"""
         return {
             server_id: self.get_pool_status(server_id)
             for server_id in self._configs

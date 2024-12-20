@@ -1,33 +1,39 @@
 const express = require('express');
 const router = express.Router();
 const NDSList = require('../Models/NDSList');
-const NDSGateways = require('../Models/NDSGateways');
+const NodeList = require('../Models/NodeList');
 const { Op } = require('sequelize');
 const axios = require('axios');
+const NDSFileList = require('../Models/NDSFileList');
 
 // 异步通知函数
-async function notifyPythonServices(action, config) {
+async function notifyServices(action, config) {
     try {
-        // 获取所有网关
-        const gateways = await NDSGateways.findAll();
+        // 获取所有网关和扫描器节点
+        const nodes = await NodeList.findAll({
+            where: { 
+                NodeType: { [Op.in]: ['NDSGateway', 'NDSScanner'] }
+            }
+        });
         
-        // 使用 Promise.allSettled 并行发送通知，允许部分失败
-        const notifyPromises = gateways.map(gateway => {
-            const serviceUrl = `http://${gateway.Host}:${gateway.Port}`;
-            return axios.post(`${serviceUrl}/nds/update-pool`, {
+        const notifyPromises = nodes.map(node => {
+            const serviceUrl = `http://${node.Host}:${node.Port}`;
+            const endpoint = node.NodeType === 'NDSGateway' 
+                ? '/nds/update-pool'
+                : '/control/nds';
+            
+            return axios.post(`${serviceUrl}${endpoint}`, {
                 action,
                 config
             }).catch(error => {
-                console.warn(`Failed to notify gateway ${serviceUrl}: ${error.message}`);
-                return null; // 失败时返回null，不影响其他通知
+                console.warn(`Failed to notify ${node.NodeType} ${serviceUrl}: ${error.message}`);
+                return null;
             });
         });
 
-        // 等待所有通知完成，不关心结果
         await Promise.allSettled(notifyPromises);
     } catch (error) {
         console.error('Error in notification process:', error);
-        // 不抛出错误，让主流程继续执行
     }
 }
 
@@ -35,7 +41,7 @@ async function notifyPythonServices(action, config) {
 function notifyAsync(action, config) {
     // 使用 setImmediate 将通知任务放入下一个事件循环
     setImmediate(async () => {
-        await notifyPythonServices(action, config);
+        await notifyServices(action, config);
     });
 }
 
@@ -184,7 +190,19 @@ router.post('/updateStatus', async (req, res) => {
         if (Switch !== undefined) {
             notifyAsync('update', updatedNDS);
         }
-        
+
+        // 如果Switch变为0，通知Scanner停止扫描
+        if (Switch === 0) {
+            const gateways = await NodeList.findAll({
+                where: { NodeType: 'NDSGateway' }
+            });
+            await Promise.all(gateways.map(gateway => {
+                const scannerUrl = `http://${gateway.Host}:10002`;  // 假设Scanner服务端口为10002
+                return axios.post(`${scannerUrl}/control/nds/${ID}/stop`)
+                    .catch(e => console.warn(`Failed to stop scanner: ${e.message}`));
+            }));
+        }
+
         res.json({ 
             message: '更新成功',
             code: 200,
@@ -203,22 +221,97 @@ router.delete('/remove/:id', async (req, res) => {
     try {
         const { id } = req.params;
         
-        // 在删除之前获取完整记录用于通知
-        const recordToDelete = await NDSList.findByPk(id);
-        if (!recordToDelete) {
-            return res.status(404).json({ message: '未找到要删除的记录' });
-        }
-
-        await NDSList.destroy({
-            where: { ID: id }
+        // 先停止扫描
+        const gateways = await NodeList.findAll({
+            where: { NodeType: 'NDSGateway' }
         });
+        await Promise.all(gateways.map(gateway => {
+            const scannerUrl = `http://${gateway.Host}:10002`;
+            return axios.post(`${scannerUrl}/control/nds/${id}/stop`)
+                .catch(e => console.warn(`Failed to stop scanner: ${e.message}`));
+        }));
 
+        // 然后删除记录
+        await NDSList.destroy({ where: { ID: id } });
+        
         // 异步通知，不等待结果
         notifyAsync('remove', recordToDelete);
         
         res.json({ message: '删除成功' });
     } catch (error) {
         res.status(500).json({ message: error.message });
+    }
+});
+
+// 添加文件同步接口
+router.post('/files/sync', async (req, res) => {
+    try {
+        const { nds_id, files } = req.body;
+        
+        // 获取数据库中现有文件
+        const existingFiles = await NDSFileList.findAll({
+            where: { NDSID: nds_id }
+        });
+        
+        const existingPaths = new Set(existingFiles.map(f => f.FilePath));
+        const newPaths = new Set(files);
+        
+        // 需要删除的文件
+        const toDelete = existingFiles.filter(f => !newPaths.has(f.FilePath));
+        
+        // 需要添加的文件
+        const toAdd = files.filter(f => !existingPaths.has(f));
+        
+        // 删除不存在的文件
+        await NDSFileList.destroy({
+            where: {
+                ID: toDelete.map(f => f.ID)
+            }
+        });
+        
+        // 添加新文件
+        if (toAdd.length > 0) {
+            await NDSFileList.bulkCreate(
+                toAdd.map(filePath => ({
+                    NDSID: nds_id,
+                    FilePath: filePath,
+                    DataType: filePath.toLowerCase().includes('mdt') ? 'MDT' : 'MRO',
+                    FileTime: new Date(),
+                    Parsed: 0
+                }))
+            );
+        }
+        
+        res.json({
+            message: 'Sync successful',
+            new_files: toAdd.length,
+            deleted_files: toDelete.length
+        });
+    } catch (error) {
+        res.status(500).json({
+            message: error.message
+        });
+    }
+});
+
+// 清理NDS相关文件记录
+router.delete('/files/clean/:nds_id', async (req, res) => {
+    try {
+        const { nds_id } = req.params;
+        
+        await NDSFileList.destroy({
+            where: { NDSID: nds_id }
+        });
+        
+        res.json({
+            message: 'Files cleaned successfully',
+            code: 200
+        });
+    } catch (error) {
+        res.status(500).json({
+            message: error.message,
+            code: 500
+        });
     }
 });
 

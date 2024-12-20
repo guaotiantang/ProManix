@@ -1,39 +1,47 @@
 const { DataTypes } = require('sequelize');
 const sequelize = require('../Libs/DataBasePool').sequelize;
 
-const NDSGateways = sequelize.define('NDSGateways', {
+const NodeList = sequelize.define('NodeList', {
     ID: {
-        type: DataTypes.INTEGER,
+        type: DataTypes.BIGINT,
         primaryKey: true,
         autoIncrement: true,
         field: 'ID'
     },
+    NodeType: {
+        type: DataTypes.STRING(128),
+        allowNull: true,
+        field: 'NodeType'
+    },
+    NodeName: {
+        type: DataTypes.STRING(128),
+        allowNull: true,
+        field: 'NodeName'
+    },
     Host: {
         type: DataTypes.STRING(128),
-        allowNull: false,
+        allowNull: true,
         field: 'Host'
     },
     Port: {
         type: DataTypes.INTEGER,
-        allowNull: false,
+        allowNull: true,
         field: 'Port'
     },
     CreateTime: {
         type: DataTypes.DATE,
-        allowNull: false,
+        allowNull: true,
         field: 'CreateTime'
-    },
-    UpdateTime: {
-        type: DataTypes.DATE,
-        allowNull: false,
-        field: 'UpdateTime'
     }
 }, {
-    tableName: 'NDSGateways',
+    tableName: 'NodeList',
     timestamps: false,
     indexes: [
         {
-            fields: ['ID']
+            fields: ['NodeType']
+        },
+        {
+            fields: ['NodeName']
         },
         {
             fields: ['Host']
@@ -45,16 +53,11 @@ const NDSGateways = sequelize.define('NDSGateways', {
     hooks: {
         beforeValidate: (record) => {
             record.CreateTime = new Date();
-            record.UpdateTime = new Date();
         },
         beforeCreate(record) {
             record.CreateTime = new Date();
-            record.UpdateTime = new Date();
-        },
-        beforeUpdate: (record) => {
-            record.UpdateTime = new Date();
         }
     }
 });
 
-module.exports = NDSGateways; 
+module.exports = NodeList; 

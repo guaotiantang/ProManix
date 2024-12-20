@@ -175,9 +175,13 @@ class NDSClient:
             if self.protocol == "FTP":
                 try:
                     await self.client.change_directory("/")
-                    return True
+                    # FTP服务器返回250表示操作成功
+                    return True  # 只要没有抛出异常就说明连接正常
                 except aioftp.StatusCodeError as e:
-                    return e.received_codes == [250]
+                    # 有些FTP服务器可能返回不同的成功状态码
+                    return e.received_codes[0] in {200, 250, 257}  # 添加更多可能的成功状态码
+                except Exception:
+                    return False
             else:  # SFTP
                 await self.client.lsdir("/")
                 return True
@@ -387,7 +391,7 @@ class NDSClient:
             读取的字节数据
 
         Raises:
-            NDSIOError: 读取过程中发生错误
+            NDSIOError: 在读取文件过程中发生错误
         """
         if self.__stream is None:
             raise NDSIOError("File is not open", level=1)
