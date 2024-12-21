@@ -1,0 +1,73 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "启动前端",
+            "cwd": "${workspaceFolder}/client",
+            "runtimeExecutable": "yarn",
+            "runtimeArgs": [
+                "run",
+                "dev",
+                "--port",
+                "8080"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "启动服务器",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "program": "${workspaceFolder}/server/index.js",
+            "cwd": "${workspaceFolder}/server",
+            "runtimeExecutable": "${workspaceFolder}/server/node_modules/.bin/nodemon",
+            "restart": true,
+            "console": "integratedTerminal",
+            "internalConsoleOptions": "neverOpen"
+        },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "启动MParser",
+            "cwd": "${workspaceFolder}/MParser/server",
+            "runtimeExecutable": "${workspaceFolder}/MParser/server/node_modules/.bin/nodemon",
+            "restart": true,
+            "console": "integratedTerminal",
+            "internalConsoleOptions": "neverOpen"
+        },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "启动NDSGateway",
+            "cwd": "${workspaceFolder}/MParser/nodes/NDSGateway",
+            "runtimeExecutable": "${workspaceFolder}/MParser/nodes/NDSGateway/venv/Scripts/python",
+            "runtimeArgs": [
+                "main.py"
+            ],
+            "restart": true,
+            "console": "integratedTerminal",
+            "internalConsoleOptions": "neverOpen",
+            "dependsOn": ["启动MParser"]
+        }
+    ],
+    "compounds": [
+        {
+            "name": "所有服务",
+            "configurations": [
+                "启动前端",
+                "启动服务器",
+                "启动MParser",
+                "启动NDSGateway"
+            ],
+            "stopAll": true,
+            "presentation": {
+                "order": 1,
+                "group": "launch"
+            }
+        }
+    ]
+}
