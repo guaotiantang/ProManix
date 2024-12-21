@@ -6,12 +6,10 @@
             "request": "launch",
             "name": "启动前端",
             "cwd": "${workspaceFolder}/client",
-            "runtimeExecutable": "yarn",
+            "runtimeExecutable": "pwsh",
             "runtimeArgs": [
-                "run",
-                "dev",
-                "--port",
-                "8080"
+                "-Command",
+                "yarn run dev --port 8080"
             ],
             "console": "integratedTerminal"
         },
@@ -25,7 +23,7 @@
             "program": "${workspaceFolder}/server/index.js",
             "cwd": "${workspaceFolder}/server",
             "runtimeExecutable": "${workspaceFolder}/server/node_modules/.bin/nodemon",
-            "restart": true,
+            "runtimeArgs": [],
             "console": "integratedTerminal",
             "internalConsoleOptions": "neverOpen"
         },
@@ -35,7 +33,7 @@
             "name": "启动MParser",
             "cwd": "${workspaceFolder}/MParser/server",
             "runtimeExecutable": "${workspaceFolder}/MParser/server/node_modules/.bin/nodemon",
-            "restart": true,
+            "runtimeArgs": [],
             "console": "integratedTerminal",
             "internalConsoleOptions": "neverOpen"
         },
@@ -44,11 +42,11 @@
             "request": "launch",
             "name": "启动NDSGateway",
             "cwd": "${workspaceFolder}/MParser/nodes/NDSGateway",
-            "runtimeExecutable": "${workspaceFolder}/MParser/nodes/NDSGateway/venv/Scripts/python",
+            "runtimeExecutable": "pwsh",
             "runtimeArgs": [
-                "main.py"
+                "-Command",
+                "./venv/Scripts/python main.py"
             ],
-            "restart": true,
             "console": "integratedTerminal",
             "internalConsoleOptions": "neverOpen",
             "dependsOn": ["启动MParser"]
