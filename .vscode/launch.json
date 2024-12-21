@@ -22,8 +22,10 @@
             ],
             "program": "${workspaceFolder}/server/index.js",
             "cwd": "${workspaceFolder}/server",
-            "runtimeExecutable": "${workspaceFolder}/server/node_modules/.bin/nodemon",
-            "runtimeArgs": [],
+            "runtimeExecutable": "npx",
+            "runtimeArgs": [
+                "nodemon"
+            ],
             "console": "integratedTerminal",
             "internalConsoleOptions": "neverOpen"
         },
@@ -32,8 +34,10 @@
             "request": "launch",
             "name": "启动MParser",
             "cwd": "${workspaceFolder}/MParser/server",
-            "runtimeExecutable": "${workspaceFolder}/MParser/server/node_modules/.bin/nodemon",
-            "runtimeArgs": [],
+            "runtimeExecutable": "npx",
+            "runtimeArgs": [
+                "nodemon"
+            ],
             "console": "integratedTerminal",
             "internalConsoleOptions": "neverOpen"
         },
