@@ -69,11 +69,11 @@
                 "启动MParser",
                 "启动NDSGateway"
             ],
-            "preLaunchTask": "prepare-launch",
             "presentation": {
                 "order": 1,
                 "group": "launch"
-            }
+            },
+            "stopAll": true
         }
     ]
 }
