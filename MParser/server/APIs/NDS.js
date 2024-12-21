@@ -5,6 +5,8 @@ const NodeList = require('../Models/NodeList');
 const { Op } = require('sequelize');
 const axios = require('axios');
 const NDSFileList = require('../Models/NDSFileList');
+const { sequelize } = require('../Libs/DataBasePool');
+
 
 // 异步通知函数
 async function notifyServices(action, config) {
@@ -78,7 +80,9 @@ router.post('/add', async (req, res) => {
         const data = req.body;
         
         const existingRecord = await NDSList.findOne({
-            where: { NDSName: data.NDSName }
+            where: { NDSName: data.NDSName },
+            attributes: ['ID', 'NDSName'],
+            raw: true
         });
         
         if (existingRecord) {
@@ -243,56 +247,102 @@ router.delete('/remove/:id', async (req, res) => {
     }
 });
 
-// 添加文件同步接口
-router.post('/files/sync', async (req, res) => {
+// 获取差异文件并删除不存在的文件(使用数据库比较)
+router.post('/files/diff', async (req, res) => {
+    let transaction;
     try {
+        transaction = await sequelize.transaction();
         const { nds_id, files } = req.body;
-        
-        // 获取数据库中现有文件
-        const existingFiles = await NDSFileList.findAll({
-            where: { NDSID: nds_id }
-        });
-        
-        const existingPaths = new Set(existingFiles.map(f => f.FilePath));
-        const newPaths = new Set(files);
-        
-        // 需要删除的文件
-        const toDelete = existingFiles.filter(f => !newPaths.has(f.FilePath));
-        
-        // 需要添加的文件
-        const toAdd = files.filter(f => !existingPaths.has(f));
-        
-        // 删除不存在的文件
-        await NDSFileList.destroy({
-            where: {
-                ID: toDelete.map(f => f.ID)
-            }
-        });
-        
-        // 添加新文件
-        if (toAdd.length > 0) {
-            await NDSFileList.bulkCreate(
-                toAdd.map(filePath => ({
-                    NDSID: nds_id,
-                    FilePath: filePath,
-                    DataType: filePath.toLowerCase().includes('mdt') ? 'MDT' : 'MRO',
-                    FileTime: new Date(),
-                    Parsed: 0
-                }))
+        if (!nds_id || !files || files.length === 0) {
+            return res.status(400).json({ message: '缺少必要参数' });
+        }
+
+        // 创建临时表
+        await sequelize.query(`
+            CREATE TEMPORARY TABLE temp_files (
+                FilePath VARCHAR(250) NOT NULL,
+                INDEX (FilePath)  -- 添加索引提高性能
+            )
+        `, { transaction });
+
+        // 分批导入数据
+        const batchSize = 1000;
+        for (let i = 0; i < files.length; i += batchSize) {
+            const batch = files.slice(i, i + batchSize);
+            await sequelize.query(
+                `INSERT INTO temp_files (FilePath) VALUES ${
+                    batch.map(() => '(?)').join(',')
+                }`,
+                {
+                    replacements: batch,
+                    transaction,
+                    type: sequelize.QueryTypes.INSERT
+                }
             );
         }
-        
+
+        // 删除不存在的文件
+        const [result] = await sequelize.query(`
+            DELETE FROM NDSFileList 
+            WHERE NDSID = :nds_id 
+            AND FilePath NOT IN (SELECT FilePath FROM temp_files)
+        `, {
+            replacements: { nds_id },
+            transaction,
+            type: sequelize.QueryTypes.DELETE
+        });
+
+        // 获取新文件列表
+        const [newFiles] = await sequelize.query(`
+            SELECT DISTINCT t.FilePath 
+            FROM temp_files t
+            LEFT JOIN NDSFileList n ON n.FilePath = t.FilePath AND n.NDSID = :nds_id
+            WHERE n.ID IS NULL
+        `, {
+            replacements: { nds_id },
+            transaction,
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        // 提交事务
+        await transaction.commit();
+
+        // 返回结果
         res.json({
-            message: 'Sync successful',
-            new_files: toAdd.length,
-            deleted_files: toDelete.length
+            new_files: newFiles.map(file => ({
+                NDSID: nds_id,
+                FilePath: file.FilePath
+            })),
+            deleted_count: result,  // 添加删除的文件数量
+            total_files: files.length
         });
+
     } catch (error) {
+        if (error.name === 'SequelizeUniqueConstraintError') {
+            return res.status(409).json({
+                code: 409,
+                message: '记录已存在'
+            });
+        }
+        
         res.status(500).json({
-            message: error.message
+            code: 500,
+            message: '数据库操作失败',
+            detail: error.message
         });
+    } finally {
+        // 确保临时表被删除，使用独立的连接
+        try {
+            await sequelize.query('DROP TEMPORARY TABLE IF EXISTS temp_files', {
+                raw: true,
+                type: sequelize.QueryTypes.RAW
+            });
+        } catch (e) {
+            console.log(e.message);
+        }
     }
 });
+
 
 // 清理NDS相关文件记录
 router.delete('/files/clean/:nds_id', async (req, res) => {

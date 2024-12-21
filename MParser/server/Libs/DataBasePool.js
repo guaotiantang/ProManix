@@ -1,7 +1,6 @@
-const { Sequelize} = require('sequelize');
+const { Sequelize } = require('sequelize');
 
 const sequelize = new Sequelize(
-    // 使用环境变量配置数据库连接
     process.env.DB_NAME,
     process.env.DB_USER,
     process.env.DB_PASSWORD,
@@ -17,7 +16,7 @@ const sequelize = new Sequelize(
         },
         timezone: '+08:00',  // 设置时区为 UTC+8
         dialectOptions: {
-            // 确保从数据库读取的时间也是正确的时区
+            multipleStatements: true,
             dateStrings: true,
             typeCast: true
         }

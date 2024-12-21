@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Optional, Any
 import os
 from dotenv import load_dotenv
-from scanner import scanner  # 导入全局实例
+from Scanner import scanner  # 导入全局实例
 from HttpClient import HttpClient
 
 # 加载环境变量
