@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass
 from HttpClient import HttpClient
 import re
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +126,6 @@ class NDSScanner:
             # 处理结果
             zip_infos = []
             if isinstance(result, dict) and 'data' in result:
-                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                
                 for file_path, info in result['data'].items():
                     if info['status'] == 'success':
                         file_data = next((f for f in files if f['FilePath'] == file_path), None)
@@ -151,9 +150,7 @@ class NDSScanner:
                                     'FileSize': file_info['file_size'],
                                     'FlagBits': file_info.get('flag_bits', 0),
                                     'CompressType': file_info.get('compress_type', 0),
-                                    'Parsed': 0, # 0:未解析
-                                    'CreateTime': current_time,
-                                    'UpdateTime': current_time
+                                    'Parsed': 0  # 0:未解析
                                 }
                                 zip_infos.append(zip_info)
             
@@ -213,11 +210,13 @@ class NDSScanner:
                     # 直接使用 new_files，因为它们已经包含了类型信息
                     batches = [new_files[i:i + 10] for i in range(0, len(new_files), 10)]
                     
-                    results = await asyncio.gather(*(
+                    # 解析文件信息
+                    await asyncio.gather(*(
                         self.limited_parse(nds_id, batch, semaphore)
                         for batch in batches
                     ))
-                    all_zip_infos = [info for batch in results for info in batch]
+                    
+                        
 
                 # 计算下次扫描时间
                 wait_time = max(self.min_interval, 
@@ -232,12 +231,46 @@ class NDSScanner:
                 self.status[nds_id].is_scanning = False
                 await asyncio.sleep(self.min_interval)
 
+    async def submit_file_infos(self, file_infos: List[Dict]) -> None:
+        """提交文件信息到后端，按FilePath逐个提交"""
+        try:
+            # 按FilePath分组
+            file_groups = {}
+            for info in file_infos:
+                file_path = info['FilePath']
+                if file_path not in file_groups:
+                    file_groups[file_path] = []
+                file_groups[file_path].append(info)
+
+            total_files = len(file_groups)
+            for i, (file_path, group_infos) in enumerate(file_groups.items(), 1):
+                try:
+                    # 提交单个文件的所有SubFileName信息
+                    await self.backend_client.post(
+                        "nds/files/batch",
+                        json={"files": group_infos},
+                        timeout=aiohttp.ClientTimeout(total=600)  # 10分钟超时
+                    )
+                    logger.info(f"Successfully submitted file {i}/{total_files}: {file_path} ({len(group_infos)} records)")
+                except Exception as e:
+                    logger.error(f"Failed to submit file {i}/{total_files}: {file_path} - {str(e)}")
+                    # 继续处理下一个文件
+                    continue
+                
+                # 文件间短暂延迟，避免请求过于频繁
+                await asyncio.sleep(0.1)
+                
+        except Exception as e:
+            logger.error(f"Submit file infos error: {str(e)}")
+
     async def limited_parse(self, nds_id: int, file_paths: List[str], semaphore: asyncio.Semaphore) -> List[Dict]:
         """限制并发的文件解析"""
         zip_infos = []
         async with semaphore:
             zip_infos = await self.parse_zip_info(nds_id, file_paths)
-        return zip_infos
+            if zip_infos and len(zip_infos) > 0:
+                await self.submit_file_infos(zip_infos)
+            return len(zip_infos) if zip_infos else 0
 
     async def handle_nds_update(self, action: str, config: Dict) -> Dict[str, str]:
         """处理NDS配置更新"""

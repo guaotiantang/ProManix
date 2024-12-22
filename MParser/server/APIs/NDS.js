@@ -6,7 +6,14 @@ const { Op } = require('sequelize');
 const axios = require('axios');
 const NDSFileList = require('../Models/NDSFileList');
 const { sequelize } = require('../Libs/DataBasePool');
+const { Semaphore, Mutex } = require('async-mutex');
 
+// 创建全局信号量，限制总并发数
+const globalSemaphore = new Semaphore(10);  // 限制总并发为10
+// 创建队列锁，确保请求按顺序处理
+const queueMutex = new Mutex();
+// 创建互斥锁，确保请求串行处理
+const batchMutex = new Mutex();
 
 // 异步通知函数
 async function notifyServices(action, config) {
@@ -33,7 +40,7 @@ async function notifyServices(action, config) {
             }
         };
         
-        // 先知所有网关节点
+        // 先通知所有网关节点
         if (gatewayNodes.length > 0) {
             const gatewayPromises = gatewayNodes.map(node => {
                 const serviceUrl = `http://${node.Host}:${node.Port}`;
@@ -263,7 +270,7 @@ router.delete('/remove/:id', async (req, res) => {
         // 然后删除记录
         await NDSList.destroy({ where: { ID: id } });
         
-        // 异步通知，不等待结果
+        // ���步通知，不等待结果
         notifyAsync('remove', recordToDelete);
         
         res.json({ message: '删除成功' });
@@ -282,7 +289,6 @@ router.post('/files/diff', async (req, res) => {
             return res.status(400).json({ message: '缺少必要参数或参数格式错误' });
         }
 
-        // 开启事务
         transaction = await sequelize.transaction();
 
         // 创建临时表，添加类型字段
@@ -330,16 +336,14 @@ router.post('/files/diff', async (req, res) => {
                 n.FilePath = t.FilePath 
                 AND n.NDSID = :nds_id
                 AND n.DataType = t.DataType
-            WHERE n.ID IS NULL
+            WHERE n.FileHash IS NULL
         `, {
             replacements: { nds_id },
             transaction
         });
 
-        // 提交事务
         await transaction.commit();
 
-        // 返回结果，包含文件类型
         res.json({
             new_files: newFiles.map(file => ({
                 NDSID: nds_id,
@@ -351,13 +355,6 @@ router.post('/files/diff', async (req, res) => {
     } catch (error) {
         if (transaction && !transaction.finished) {
             await transaction.rollback();
-        }
-        
-        if (error.name === 'SequelizeUniqueConstraintError') {
-            return res.status(409).json({
-                code: 409,
-                message: '记录已存在'
-            });
         }
         
         res.status(500).json({
@@ -393,6 +390,87 @@ router.delete('/files/clean/:nds_id', async (req, res) => {
             message: error.message,
             code: 500
         });
+    }
+});
+
+// 批量添加文件记录
+router.post('/files/batch', async (req, res) => {
+    // 获取互斥锁
+    const release = await batchMutex.acquire();
+    let transaction;
+    
+    try {
+        const { files } = req.body;
+        
+        if (!Array.isArray(files) || files.length === 0) {
+            release();
+            return res.status(400).json({ message: '无效的文件数据' });
+        }
+
+        transaction = await sequelize.transaction();
+        
+        // 使用原生SQL进行批量插入
+        const values = files.map(file => `(
+            MD5(CONCAT(
+                ${sequelize.escape(file.NDSID)}, '_',
+                ${sequelize.escape(file.FilePath)}, '_',
+                ${sequelize.escape(file.DataType)}, '_',
+                ${sequelize.escape(file.SubFileName)}
+            )),
+            ${sequelize.escape(file.NDSID)},
+            ${sequelize.escape(file.FilePath)},
+            ${sequelize.escape(file.FileTime)},
+            ${sequelize.escape(file.DataType)},
+            ${sequelize.escape(file.eNodeBID)},
+            ${sequelize.escape(file.SubFileName)},
+            ${sequelize.escape(file.HeaderOffset)},
+            ${sequelize.escape(file.CompressSize)},
+            ${sequelize.escape(file.FileSize)},
+            ${sequelize.escape(file.FlagBits)},
+            ${sequelize.escape(file.CompressType)},
+            ${sequelize.escape(file.Parsed)},
+            NOW(),
+            NOW()
+        )`);
+
+        // 分批执行，每批1000条
+        const batchSize = 1000;
+        let insertedCount = 0;
+
+        // 串行处理每个批次
+        for (let i = 0; i < values.length; i += batchSize) {
+            const batch = values.slice(i, i + batchSize);
+            const result = await sequelize.query(`
+                INSERT IGNORE INTO NDSFileList (
+                    FileHash,
+                    NDSID, FilePath, FileTime, DataType, 
+                    eNodeBID, SubFileName, HeaderOffset, 
+                    CompressSize, FileSize, FlagBits, 
+                    CompressType, Parsed, CreateTime, UpdateTime
+                ) VALUES ${batch.join(',')}
+            `, { transaction });
+            
+            insertedCount += result[0].affectedRows || 0;
+        }
+
+        await transaction.commit();
+        
+        res.json({
+            message: '批量添加成功',
+            total: files.length,
+            created: insertedCount
+        });
+        
+    } catch (error) {
+        if (transaction) await transaction.rollback();
+        
+        res.status(500).json({
+            message: '批量添加失败',
+            error: error.message
+        });
+    } finally {
+        // 释放互斥锁
+        release();
     }
 });
 

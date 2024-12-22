@@ -11,10 +11,10 @@ const ndsRouter = require('./APIs/NDS');
 const nodeRouter = require('./APIs/Node');
 
 const app = express();
-app.use(express.json({limit: '50mb'}));
-app.use(express.urlencoded({limit: '50mb', extended: true}));
-app.use(bodyParser.json({limit: '50mb'}));
-app.use(bodyParser.urlencoded({limit: '50mb', extended: true}));
+app.use(express.json({limit: '100mb'}));
+app.use(express.urlencoded({limit: '100mb', extended: true}));
+app.use(bodyParser.json({limit: '100mb'}));
+app.use(bodyParser.urlencoded({limit: '100mb', extended: true}));
 
 app.use(cookieParser()); //启用Cookies插件
 app.use(cors({

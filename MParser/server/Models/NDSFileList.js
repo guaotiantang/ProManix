@@ -1,12 +1,14 @@
 const sequelize = require('../Libs/DataBasePool').sequelize;
 const NDSList = require('./NDSList');
+const crypto = require('crypto');
+const {DataTypes} = require('sequelize');
 
 const NDSFileList = sequelize.define('NDSFileList', {
-    ID: {
-        type: DataTypes.BIGINT,
+    FileHash: {
+        type: DataTypes.STRING(32),
         primaryKey: true,
-        autoIncrement: true,
-        field: 'ID'
+        allowNull: false,
+        field: 'FileHash'
     },
     NDSID: {
         type: DataTypes.INTEGER,
@@ -89,6 +91,8 @@ const NDSFileList = sequelize.define('NDSFileList', {
     timestamps: false,
     hooks: {
         beforeValidate: (record) => {
+            const hashStr = `${record.NDSID}_${record.FilePath}_${record.DataType}_${record.SubFileName}`;
+            record.FileHash = crypto.createHash('md5').update(hashStr).digest('hex');
             record.CreateTime = new Date();
             record.UpdateTime = new Date();
         },
@@ -101,10 +105,6 @@ const NDSFileList = sequelize.define('NDSFileList', {
         }
     },
     indexes: [
-        {
-            fields: ['ID'],
-            name: 'ID'
-        },
         {
             fields: ['NDSID'],
             name: 'NDSID'
