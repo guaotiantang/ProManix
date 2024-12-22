@@ -22,13 +22,16 @@ async function notifyServices(action, config) {
             const endpoint = node.NodeType === 'NDSGateway' 
                 ? '/nds/update-pool'
                 : '/control';
-                
-            // 根据不同操作类型构造不同的请求体
+            
+            // 处理 config 中的 dataValues
+            const configData = config.dataValues || config;
+            
+            // 构造请求体
             const requestBody = {
-                action: action,  // 保持原始action类型
+                action: action,
                 config: {
-                    ...config,
-                    operation: action  // 添加操作类型标记
+                    ...configData,
+                    operation: action
                 }
             };
             
