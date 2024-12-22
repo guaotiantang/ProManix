@@ -52,12 +52,28 @@ class NDSApi:
 nds_api = NDSApi()
 
 @router.post("/update-pool")
-async def update_pool(action: str, config: Dict) -> Dict[str, str]:
+async def update_pool(
+    action: str,
+    config: Dict[str, Any]
+) -> Dict[str, str]:
     """更新连接池配置"""
     try:
+        if not isinstance(config, dict):
+            raise HTTPException(status_code=400, detail="Invalid config format")
+            
         if action == "remove":
+            if 'ID' not in config:
+                raise HTTPException(status_code=400, detail="Missing ID in config")
             await nds_api.pool.remove_server(str(config['ID']))
             return {"message": "Server removed"}
+            
+        required_fields = ['ID', 'Switch', 'Protocol', 'Address', 'Port', 'Account', 'Password']
+        missing_fields = [field for field in required_fields if field not in config]
+        if missing_fields:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Missing required fields: {', '.join(missing_fields)}"
+            )
             
         if config['Switch'] != 1:
             await nds_api.pool.remove_server(str(config['ID']))
@@ -76,6 +92,8 @@ async def update_pool(action: str, config: Dict) -> Dict[str, str]:
         elif action == "update":
             await nds_api.pool.remove_server(str(config['ID']))
             nds_api.pool.add_server(str(config['ID']), pool_config)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid action")
             
         return {"message": f"Server {action}ed successfully"}
     except Exception as e:
