@@ -31,7 +31,7 @@ class HttpClient:
             force_close=False,
             enable_cleanup_closed=True,
             keepalive_timeout=60,
-            limit=64
+            limit=64  # 连接池大小，限制最大64个连接
         )
 
     async def __aenter__(self):

@@ -23,7 +23,7 @@ class NDSScanner:
         self.backend_client = None
         self.gateway_client = None
         self.scan_interval = 300  # 5分钟
-        self.min_interval = 30    # 最小等待时间（秒）
+        self.min_interval = 5    # 最小等待时间（秒）
         self.status: Dict[int, ScanStatus] = {}
         self._tasks: Dict[int, asyncio.Task] = {}
         self._running = False
@@ -257,8 +257,6 @@ class NDSScanner:
                     # 继续处理下一个文件
                     continue
                 
-                # 文件间短暂延迟，避免请求过于频繁
-                await asyncio.sleep(0.1)
                 
         except Exception as e:
             logger.error(f"Submit file infos error: {str(e)}")
