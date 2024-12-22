@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from HttpClient import HttpClient
+from itertools import islice
 
 logger = logging.getLogger(__name__)
 
@@ -156,21 +157,15 @@ class NDSScanner:
                 # 处理新文件
                 if new_files:
                     semaphore = asyncio.Semaphore(2)
-                    async def limited_parse(nds_id, file_paths):
-                        zip_infos = []
-                        async with semaphore:  # 确保最多两个协程同时执行
-                            zip_infos = await self.parse_zip_info(nds_id, file_paths)
-                        print(zip_infos[:10])
-                        return zip_infos
-                        
-                            
-                    # 构建任务列表，每批最多处理 10 个文件
-                    tasks = [
-                        limited_parse(nds_id, [file['FilePath'] for file in new_files[i:i + 10]])
-                        for i in range(0, len(new_files), 10)
-                    ]
-                    all_zip_infos = await asyncio.gather(*tasks)
+                    file_paths = [file['FilePath'] for file in new_files]
                     
+                    # 使用生成器表达式创建任务并直接执行
+                    all_zip_infos = []
+                    results = await asyncio.gather(*(
+                        self.limited_parse(nds_id, list(batch), semaphore)
+                        for batch in (islice(file_paths, i, i + 10) for i in range(0, len(file_paths), 10))
+                    ))
+                    all_zip_infos = [info for batch in results for info in batch]
 
                 # 计算下次扫描时间
                 wait_time = max(self.min_interval, 
@@ -184,6 +179,14 @@ class NDSScanner:
                 logger.error(f"Scan error for NDS {nds_id}: {str(e)}")
                 self.status[nds_id].is_scanning = False
                 await asyncio.sleep(self.min_interval)
+
+    async def limited_parse(self, nds_id: int, file_paths: List[str], semaphore: asyncio.Semaphore) -> List[Dict]:
+        """限制并发的文件解析"""
+        zip_infos = []
+        async with semaphore:
+            zip_infos = await self.parse_zip_info(nds_id, file_paths)
+        print(zip_infos[:10])
+        return zip_infos
 
     async def handle_nds_update(self, action: str, config: Dict) -> Dict[str, str]:
         """处理NDS配置更新"""
