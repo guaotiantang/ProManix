@@ -22,10 +22,10 @@ async function notifyServices(action, config) {
             const serviceUrl = `http://${node.Host}:${node.Port}`;
             const endpoint = node.NodeType === 'NDSGateway' 
                 ? '/nds/update-pool'
-                : '/control/nds';
+                : '/control';
             
             return axios.post(`${serviceUrl}${endpoint}`, {
-                action,
+                action: 'nds',
                 config
             }).catch(error => {
                 console.warn(`Failed to notify ${node.NodeType} ${serviceUrl}: ${error.message}`);

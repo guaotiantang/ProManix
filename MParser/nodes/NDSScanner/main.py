@@ -119,27 +119,27 @@ async def get_status(nds_id: Optional[int] = None) -> Dict[str, Any]:
 @app.post("/control")
 async def control_scanning(
     action: str,
-    nds_id: Optional[int] = None,
-    config: Optional[Dict] = None
+    config: Optional[Dict] = None,
+    nds_id: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     控制扫描服务
     - action: 操作类型 ("start", "stop", "nds")
     - nds_id: 可选,指定NDS ID
-    - config: 当action为update时的配置信息
+    - config: 当action为nds时的配置信息
     """
-    if action not in ["start", "stop", "update"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid action. Must be 'start', 'stop' or 'update'"
-        )
-    
     try:
+        if action not in ["start", "stop", "nds"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid action. Must be 'start', 'stop' or 'nds'"
+            )
+        
         if action == "nds":
             if not config:
                 raise HTTPException(
                     status_code=400,
-                    detail="Config is required for update action"
+                    detail="Config is required for nds action"
                 )
             return await scanner.handle_nds_update(action, config)
             
