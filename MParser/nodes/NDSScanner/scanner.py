@@ -159,6 +159,7 @@ class NDSScanner:
                     semaphore = asyncio.Semaphore(2)
                     file_paths = [file['FilePath'] for file in new_files]
                     
+                    
                     # 简化的批处理方式
                     batch_size = 10
                     batches = [file_paths[i:i + batch_size] for i in range(0, len(file_paths), batch_size)]
