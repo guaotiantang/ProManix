@@ -252,7 +252,7 @@ class NDSClient:
         except FileNotFoundError:
             return False
         except Exception as e:
-            raise NDSError(str(e), "NDSClient.file_exists", 1)
+            raise NDSError(str(e), f"NDSClient.file_exists remote_path:{remote_path}", 1)
 
     async def stat(self, file_path: str) -> Optional[Dict[str, Any]]:
         """获取文件状态信息"""

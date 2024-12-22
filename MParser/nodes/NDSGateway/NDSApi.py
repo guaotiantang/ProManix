@@ -95,7 +95,6 @@ async def scan_files(data: dict = Body(...)) -> List[str]:
             
         async with nds_api.scan_semaphore:
             async with nds_api.pool.get_client(str(nds_id)) as client:
-                print(f"scan nds {nds_id}")
                 return await client.scan(scan_path, filter_pattern)
     except Exception as e:
         logger.error(f"Scan files error: {str(e)}")
