@@ -6,6 +6,7 @@ import os
 from dotenv import load_dotenv
 from Scanner import scanner  # 导入全局实例
 from HttpClient import HttpClient
+from fastapi.params import Body
 
 # 加载环境变量
 load_dotenv()
@@ -117,79 +118,60 @@ async def get_status(nds_id: Optional[int] = None) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/control")
-async def control_scanning(
-    action: str,
-<<<<<<< HEAD
-    nds_id: Optional[int] = None,
-    config: Optional[Dict] = None
-=======
-    config: Optional[Dict] = None,
-    nds_id: Optional[int] = None
->>>>>>> ff16ae8fa3334d535ec5ff45f67d5ab44a2f016b
-) -> Dict[str, Any]:
-    """
-    控制扫描服务
-    - action: 操作类型 ("start", "stop", "nds")
-    - nds_id: 可选,指定NDS ID
-<<<<<<< HEAD
-    - config: 当action为update时的配置信息
-    """
-    if action not in ["start", "stop", "update"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid action. Must be 'start', 'stop' or 'update'"
-        )
-    
+async def control_scanning(data: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """控制扫描服务"""
     try:
-=======
-    - config: 当action为nds时的配置信息
-    """
-    try:
-        if action not in ["start", "stop", "nds"]:
+        action = data.get('action')
+        config = data.get('config')
+        nds_id = data.get('nds_id')
+        
+        if not action:
+            raise HTTPException(status_code=400, detail="Missing action")
+            
+        if action not in ["start", "stop", "update"]:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid action. Must be 'start', 'stop' or 'nds'"
+                detail="Invalid action. Must be 'start', 'stop' or 'update'"
             )
         
->>>>>>> ff16ae8fa3334d535ec5ff45f67d5ab44a2f016b
-        if action == "nds":
-            if not config:
-                raise HTTPException(
-                    status_code=400,
-<<<<<<< HEAD
-                    detail="Config is required for update action"
-=======
-                    detail="Config is required for nds action"
->>>>>>> ff16ae8fa3334d535ec5ff45f67d5ab44a2f016b
-                )
-            return await scanner.handle_nds_update(action, config)
-            
-        elif action == "start":
-            if nds_id is not None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Start action cannot be applied to single NDS"
-                )
-            await scanner.start_scanning()
-            return {
-                "code": 200,
-                "message": "Scanning started"
-            }
-            
-        else:  # stop
-            if nds_id is not None:
-                await scanner.stop_nds_scan(nds_id)
+        try:
+            if action == "nds":
+                if not config:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Config is required for update action"
+                    )
+                return await scanner.handle_nds_update(action, config)
+                
+            elif action == "start":
+                if nds_id is not None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Start action cannot be applied to single NDS"
+                    )
+                await scanner.start_scanning()
                 return {
                     "code": 200,
-                    "message": f"NDS {nds_id} scanning stopped"
-                }
-            else:
-                await scanner.stop_scanning()
-                return {
-                    "code": 200,
-                    "message": "All scanning stopped"
+                    "message": "Scanning started"
                 }
                 
+            else:  # stop
+                if nds_id is not None:
+                    await scanner.stop_nds_scan(nds_id)
+                    return {
+                        "code": 200,
+                        "message": f"NDS {nds_id} scanning stopped"
+                    }
+                else:
+                    await scanner.stop_scanning()
+                    return {
+                        "code": 200,
+                        "message": "All scanning stopped"
+                    }
+                
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     

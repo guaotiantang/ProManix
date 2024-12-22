@@ -1,8 +1,7 @@
 from fastapi import APIRouter, HTTPException, Body
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 from NDSPool import NDSPool, PoolConfig
-from HttpClient import HttpClient, HttpConfig
-import os
+from HttpClient import HttpClient
 import logging
 import asyncio
 
@@ -52,12 +51,15 @@ class NDSApi:
 nds_api = NDSApi()
 
 @router.post("/update-pool")
-async def update_pool(
-    action: str,
-    config: Dict[str, Any]
-) -> Dict[str, str]:
+async def update_pool(data: Dict[str, Any] = Body(...)) -> Dict[str, str]:
     """更新连接池配置"""
     try:
+        action = data.get('action')
+        config = data.get('config')
+        
+        if not action or not config:
+            raise HTTPException(status_code=400, detail="Missing action or config")
+            
         if not isinstance(config, dict):
             raise HTTPException(status_code=400, detail="Invalid config format")
             
