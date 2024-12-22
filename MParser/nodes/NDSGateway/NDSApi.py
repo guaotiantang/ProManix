@@ -160,8 +160,11 @@ async def get_zip_info(data: dict = Body(...)) -> Dict[str, Any]:
                                     "file_name": info.file_name,
                                     "sub_file_name": info.sub_file_name,
                                     "directory": info.directory,
+                                    "header_offset": info.header_offset,
                                     "compress_size": info.compress_size,
                                     "file_size": info.file_size,
+                                    "flag_bits": info.flag_bits,
+                                    "compress_type": info.compress_type,
                                     "enodebid": getattr(info, 'enodebid', None)
                                 }
                                 for info in result

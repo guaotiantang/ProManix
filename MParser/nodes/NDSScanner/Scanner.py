@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from HttpClient import HttpClient
-from itertools import islice
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,33 @@ class NDSScanner:
         self._tasks: Dict[int, asyncio.Task] = {}
         self._running = False
         self._lock = asyncio.Lock()
+        # 预编译正则表达式
+        self._time_pattern = re.compile(r'[_-](\d{14})')
+
+    def _extract_time_from_name(self, name: str) -> str:
+        """从文件名中提取时间并转换为数据库格式
+        
+        Args:
+            name: 文件名，支持以下格式：
+                 - FDD-LTE_MRO_ZTE_OMC1_292551_20241220023000.zip
+                 - FDD-LTE_MRO_ZTE_OMC1_292551-20241220023000_1.zip
+                 等任意包含 _YYYYMMDDHHMMSS 或 -YYYYMMDDHHMMSS 的格式
+        
+        Returns:
+            str: 格式化的时间字符串，如 '2024-12-20 02:30:00'
+                 如果无法提取时间，返回当前时间
+        """
+        try:
+            match = self._time_pattern.search(name)
+            if match:
+                time_str = match.group(1)
+                # 解析时间字符串
+                parsed_time = datetime.strptime(time_str, '%Y%m%d%H%M%S')
+                # 转换为数据库格式
+                return parsed_time.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            logger.warning(f"Failed to parse time from name {name}: {e}")
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     async def init_scanner(self, backend_url: str, gateway_url: str):
         """初始化扫描器"""
@@ -52,7 +79,7 @@ class NDSScanner:
             logger.error(f"Fetch configs error: {str(e)}")
             return []
 
-    async def scan_nds(self, nds_config: Dict) -> List[str]:
+    async def scan_nds(self, nds_config: Dict) -> List[Dict]:
         """扫描单个NDS的文件"""
         try:
             # 扫描MRO文件
@@ -61,10 +88,11 @@ class NDSScanner:
                 json={
                     "nds_id": nds_config['ID'],
                     "scan_path": nds_config['MRO_Path'],
-                    "filter_pattern": nds_config['MRO_Filter']
+                    "filter_pattern": nds_config['MRO_Filter'],
+                    "data_type": "MRO"  # 添加文件类型标记
                 }
             )
-            mro_files = mro_response if isinstance(mro_response, list) else []
+            mro_files = [{"path": f, "type": "MRO"} for f in (mro_response if isinstance(mro_response, list) else [])]
 
             # 扫描MDT文件
             mdt_response = await self.gateway_client.post(
@@ -72,63 +100,88 @@ class NDSScanner:
                 json={
                     "nds_id": nds_config['ID'],
                     "scan_path": nds_config['MDT_Path'],
-                    "filter_pattern": nds_config['MDT_Filter']
+                    "filter_pattern": nds_config['MDT_Filter'],
+                    "data_type": "MDT"  # 添加文件类型标记
                 }
             )
-            mdt_files = mdt_response if isinstance(mdt_response, list) else []
+            mdt_files = [{"path": f, "type": "MDT"} for f in (mdt_response if isinstance(mdt_response, list) else [])]
 
             return mro_files + mdt_files
         except Exception as e:
             logger.error(f"Scan error: {str(e)}")
             return []
 
-    async def parse_zip_info(self, nds_id: int, files: List[str]) -> List[Dict]:
-        """解析zip文件信息
-        返回格式: [
-            {
-                'file_name': 'xxx.zip',
-                'sub_file_name': 'xxx.xml',
-                'directory': '/path/to/dir',
-                'compress_size': 1234,
-                'file_size': 5678,
-                'enodebid': 123
-            },
-            ...
-        ]
-        """
+    async def parse_zip_info(self, nds_id: int, files: List[Dict]) -> List[Dict]:
+        """解析zip文件信息，返回符合NDSFileList格式的数据"""
         try:
             result = await self.gateway_client.post(
                 "nds/zip-info",
                 json={
                     "nds_id": nds_id,
-                    "file_paths": files
+                    "file_paths": [file['FilePath'] for file in files]
                 }
             )
-            # 提取成功的文件信息
+
+            # 处理结果
+            zip_infos = []
             if isinstance(result, dict) and 'data' in result:
-                zip_infos = []
-                for _, info in result['data'].items():
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                for file_path, info in result['data'].items():
                     if info['status'] == 'success':
-                        zip_infos.extend(info['info'])
-                return zip_infos
-            return []
+                        file_data = next((f for f in files if f['FilePath'] == file_path), None)
+                        if file_data:
+                            for file_info in info['info']:
+                                # 优先从SubFileName提取时间，如果失败则尝试从FilePath提取
+                                file_time = (
+                                    self._extract_time_from_name(file_info['sub_file_name']) 
+                                    if file_info.get('sub_file_name') 
+                                    else self._extract_time_from_name(file_path)
+                                )
+                                
+                                zip_info = {
+                                    'NDSID': nds_id,
+                                    'FilePath': file_path,
+                                    'FileTime': file_time,
+                                    'DataType': file_data['DataType'],
+                                    'eNodeBID': int(file_info.get('enodebid', 0)),
+                                    'SubFileName': file_info['sub_file_name'],
+                                    'HeaderOffset': file_info.get('header_offset', 0),
+                                    'CompressSize': file_info['compress_size'],
+                                    'FileSize': file_info['file_size'],
+                                    'FlagBits': file_info.get('flag_bits', 0),
+                                    'CompressType': file_info.get('compress_type', 0),
+                                    'Parsed': 0, # 0:未解析
+                                    'CreateTime': current_time,
+                                    'UpdateTime': current_time
+                                }
+                                zip_infos.append(zip_info)
+            
+            return zip_infos
         except Exception as e:
             logger.error(f"Parse ZIP info error: {str(e)}")
             return []
 
-    async def diff_files(self, nds_id: int, files: List[str]) -> List[Dict]:
+    async def diff_files(self, nds_id: int, files: List[Dict]) -> List[Dict]:
         """获取新增文件信息列表"""
         try:
+            # 修改请求格式，直接发送包含 path 和 type 的文件列表
             result = await self.backend_client.post(
                 "nds/files/diff",
                 json={
                     "nds_id": nds_id,
-                    "files": files
+                    "files": [
+                        {
+                            "path": file["path"],
+                            "type": file["type"]
+                        } for file in files
+                    ]
                 }
             )
-            # 获取完整的 new_files 列表（包含 NDSID 和 FilePath）
+            
             if isinstance(result, dict) and 'new_files' in result:
-                return result['new_files']  # 返回完整对象列表 [{NDSID: xxx, FilePath: xxx}, ...]
+                # 不需要额外处理类型信息，因为后端已经返回了完整的信息
+                return result['new_files']
             return []
         except Exception as e:
             logger.error(f"Diff files error: {str(e)}")
@@ -157,14 +210,9 @@ class NDSScanner:
                 # 处理新文件
                 if new_files:
                     semaphore = asyncio.Semaphore(2)
-                    file_paths = [file['FilePath'] for file in new_files]
+                    # 直接使用 new_files，因为它们已经包含了类型信息
+                    batches = [new_files[i:i + 10] for i in range(0, len(new_files), 10)]
                     
-                    
-                    # 简化的批处理方式
-                    batch_size = 10
-                    batches = [file_paths[i:i + batch_size] for i in range(0, len(file_paths), batch_size)]
-                    
-                    # 并发执行所有批次
                     results = await asyncio.gather(*(
                         self.limited_parse(nds_id, batch, semaphore)
                         for batch in batches
@@ -189,7 +237,6 @@ class NDSScanner:
         zip_infos = []
         async with semaphore:
             zip_infos = await self.parse_zip_info(nds_id, file_paths)
-        print(zip_infos[:10])
         return zip_infos
 
     async def handle_nds_update(self, action: str, config: Dict) -> Dict[str, str]:

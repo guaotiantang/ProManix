@@ -285,62 +285,70 @@ router.post('/files/diff', async (req, res) => {
         // 开启事务
         transaction = await sequelize.transaction();
 
-        // 创建临时表
+        // 创建临时表，添加类型字段
         await sequelize.query(`
             CREATE TEMPORARY TABLE temp_files (
                 FilePath VARCHAR(250) NOT NULL,
+                DataType VARCHAR(20) NOT NULL,
                 INDEX (FilePath)
             )
         `, { transaction });
-        console.log("创建临时表成功");
-        // 分批导入数据
+
+        // 分批导入数据，包含文件类型
         const batchSize = 1000;
-        const values = files.map(file => `(${sequelize.escape(file)})`);
+        const values = files.map(file => 
+            `(${sequelize.escape(file.path)}, ${sequelize.escape(file.type)})`
+        );
         
         for (let i = 0; i < values.length; i += batchSize) {
             const batch = values.slice(i, i + batchSize);
             await sequelize.query(
-                `INSERT INTO temp_files (FilePath) VALUES ${batch.join(',')}`,
+                `INSERT INTO temp_files (FilePath, DataType) VALUES ${batch.join(',')}`,
                 { transaction }
             );
         }
-        console.log("导入数据成功");
 
-        // 删除不存在的文件
+        // 删除不存在的文件，同时匹配文件类型
         await sequelize.query(`
             DELETE FROM NDSFileList 
             WHERE NDSID = :nds_id 
-            AND FilePath NOT IN (SELECT FilePath FROM temp_files)
+            AND NOT EXISTS (
+                SELECT 1 FROM temp_files 
+                WHERE temp_files.FilePath = NDSFileList.FilePath 
+                AND temp_files.DataType = NDSFileList.DataType
+            )
         `, {
             replacements: { nds_id },
             transaction
         });
-        console.log("删除不存在的文件成功");
 
-        // 获取新文件列表
+        // 获取新文件列表，包含类型信息
         const [newFiles] = await sequelize.query(`
-            SELECT DISTINCT t.FilePath 
+            SELECT DISTINCT t.FilePath, t.DataType
             FROM temp_files t
-            LEFT JOIN NDSFileList n ON n.FilePath = t.FilePath AND n.NDSID = :nds_id
+            LEFT JOIN NDSFileList n ON 
+                n.FilePath = t.FilePath 
+                AND n.NDSID = :nds_id
+                AND n.DataType = t.DataType
             WHERE n.ID IS NULL
         `, {
             replacements: { nds_id },
             transaction
         });
-        console.log("获取新文件列表成功");
+
         // 提交事务
         await transaction.commit();
-        console.log("提交事务成功");
-        // 返回结果
+
+        // 返回结果，包含文件类型
         res.json({
             new_files: newFiles.map(file => ({
                 NDSID: nds_id,
-                FilePath: file.FilePath
+                FilePath: file.FilePath,
+                DataType: file.DataType
             }))
         });
 
     } catch (error) {
-        // 只在事务未完成时进行回滚
         if (transaction && !transaction.finished) {
             await transaction.rollback();
         }
@@ -359,7 +367,6 @@ router.post('/files/diff', async (req, res) => {
         });
     } finally {
         try {
-            // 清理临时表
             await sequelize.query('DROP TEMPORARY TABLE IF EXISTS temp_files');
         } catch (e) {
             console.error('Error dropping temporary table:', e);
