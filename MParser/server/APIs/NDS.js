@@ -276,12 +276,14 @@ router.delete('/remove/:id', async (req, res) => {
 router.post('/files/diff', async (req, res) => {
     let transaction;
     try {
-        transaction = await sequelize.transaction();
         const { nds_id, files } = req.body;
         
         if (!nds_id || !Array.isArray(files) || files.length === 0) {
             return res.status(400).json({ message: '缺少必要参数或参数格式错误' });
         }
+
+        // 开启事务
+        transaction = await sequelize.transaction();
 
         // 创建临时表
         await sequelize.query(`
@@ -290,7 +292,7 @@ router.post('/files/diff', async (req, res) => {
                 INDEX (FilePath)
             )
         `, { transaction });
-
+        console.log("创建临时表成功");
         // 分批导入数据
         const batchSize = 1000;
         const values = files.map(file => `(${sequelize.escape(file)})`);
@@ -302,6 +304,7 @@ router.post('/files/diff', async (req, res) => {
                 { transaction }
             );
         }
+        console.log("导入数据成功");
 
         // 删除不存在的文件
         await sequelize.query(`
@@ -310,9 +313,9 @@ router.post('/files/diff', async (req, res) => {
             AND FilePath NOT IN (SELECT FilePath FROM temp_files)
         `, {
             replacements: { nds_id },
-            transaction,
-            type: sequelize.QueryTypes.DELETE
+            transaction
         });
+        console.log("删除不存在的文件成功");
 
         // 获取新文件列表
         const [newFiles] = await sequelize.query(`
@@ -322,13 +325,12 @@ router.post('/files/diff', async (req, res) => {
             WHERE n.ID IS NULL
         `, {
             replacements: { nds_id },
-            transaction,
-            type: sequelize.QueryTypes.SELECT
+            transaction
         });
-
+        console.log("获取新文件列表成功");
         // 提交事务
         await transaction.commit();
-
+        console.log("提交事务成功");
         // 返回结果
         res.json({
             new_files: newFiles.map(file => ({
@@ -338,7 +340,10 @@ router.post('/files/diff', async (req, res) => {
         });
 
     } catch (error) {
-        if (transaction) await transaction.rollback();
+        // 只在事务未完成时进行回滚
+        if (transaction && !transaction.finished) {
+            await transaction.rollback();
+        }
         
         if (error.name === 'SequelizeUniqueConstraintError') {
             return res.status(409).json({
@@ -354,6 +359,7 @@ router.post('/files/diff', async (req, res) => {
         });
     } finally {
         try {
+            // 清理临时表
             await sequelize.query('DROP TEMPORARY TABLE IF EXISTS temp_files');
         } catch (e) {
             console.error('Error dropping temporary table:', e);
