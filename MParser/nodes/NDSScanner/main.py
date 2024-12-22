@@ -80,7 +80,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 跨域设置
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -122,56 +122,49 @@ async def control_scanning(data: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """控制扫描服务"""
     try:
         action = data.get('action')
-        config = data.get('config')
-        nds_id = data.get('nds_id')
+        config = data.get('config', {})
         
         if not action:
             raise HTTPException(status_code=400, detail="Missing action")
             
-        if action not in ["start", "stop", "update"]:
+        if action not in ["add", "update", "remove", "start", "stop"]:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid action. Must be 'start', 'stop' or 'update'"
+                detail="Invalid action"
             )
-        
-        try:
-            if action == "nds":
-                if not config:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Config is required for update action"
-                    )
-                return await scanner.handle_nds_update(action, config)
-                
-            elif action == "start":
-                if nds_id is not None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Start action cannot be applied to single NDS"
-                    )
-                await scanner.start_scanning()
+            
+        # NDS相关操作
+        if action in ["add", "update", "remove"]:
+            if not config:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Config is required for NDS operations"
+                )
+            return await scanner.handle_nds_update(action, config)
+            
+        # 扫描控制操作
+        elif action == "start":
+            await scanner.start_scanning()
+            return {
+                "code": 200,
+                "message": "Scanning started"
+            }
+            
+        else:  # stop
+            nds_id = config.get('ID')  # 可选的NDS ID
+            if nds_id:
+                await scanner.stop_nds_scan(nds_id)
                 return {
                     "code": 200,
-                    "message": "Scanning started"
+                    "message": f"NDS {nds_id} scanning stopped"
+                }
+            else:
+                await scanner.stop_scanning()
+                return {
+                    "code": 200,
+                    "message": "All scanning stopped"
                 }
                 
-            else:  # stop
-                if nds_id is not None:
-                    await scanner.stop_nds_scan(nds_id)
-                    return {
-                        "code": 200,
-                        "message": f"NDS {nds_id} scanning stopped"
-                    }
-                else:
-                    await scanner.stop_scanning()
-                    return {
-                        "code": 200,
-                        "message": "All scanning stopped"
-                    }
-                
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     

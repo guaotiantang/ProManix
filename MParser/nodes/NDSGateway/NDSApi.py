@@ -55,20 +55,25 @@ async def update_pool(data: Dict[str, Any] = Body(...)) -> Dict[str, str]:
     """更新连接池配置"""
     try:
         action = data.get('action')
-        config = data.get('config')
+        config = data.get('config', {})
         
         if not action or not config:
             raise HTTPException(status_code=400, detail="Missing action or config")
             
+        if action not in ['add', 'update', 'remove']:
+            raise HTTPException(status_code=400, detail="Invalid action")
+            
         if not isinstance(config, dict):
             raise HTTPException(status_code=400, detail="Invalid config format")
             
+        # 处理删除操作
         if action == "remove":
             if 'ID' not in config:
                 raise HTTPException(status_code=400, detail="Missing ID in config")
             await nds_api.pool.remove_server(str(config['ID']))
             return {"message": "Server removed"}
             
+        # 处理添加和更新操作
         required_fields = ['ID', 'Switch', 'Protocol', 'Address', 'Port', 'Account', 'Password']
         missing_fields = [field for field in required_fields if field not in config]
         if missing_fields:
@@ -77,10 +82,12 @@ async def update_pool(data: Dict[str, Any] = Body(...)) -> Dict[str, str]:
                 detail=f"Missing required fields: {', '.join(missing_fields)}"
             )
             
+        # 如果Switch为0，执行删除操作
         if config['Switch'] != 1:
             await nds_api.pool.remove_server(str(config['ID']))
             return {"message": "Server removed due to Switch off"}
             
+        # 创建连接池配置
         pool_config = PoolConfig(
             protocol=config['Protocol'],
             host=config['Address'],
@@ -89,15 +96,15 @@ async def update_pool(data: Dict[str, Any] = Body(...)) -> Dict[str, str]:
             passwd=config['Password']
         )
         
+        # 执行相应操作
         if action == "add":
             nds_api.pool.add_server(str(config['ID']), pool_config)
-        elif action == "update":
+        else:  # update
             await nds_api.pool.remove_server(str(config['ID']))
             nds_api.pool.add_server(str(config['ID']), pool_config)
-        else:
-            raise HTTPException(status_code=400, detail="Invalid action")
             
         return {"message": f"Server {action}ed successfully"}
+        
     except Exception as e:
         logger.error(f"Update pool error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

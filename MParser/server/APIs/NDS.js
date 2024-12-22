@@ -11,7 +11,6 @@ const { sequelize } = require('../Libs/DataBasePool');
 // 异步通知函数
 async function notifyServices(action, config) {
     try {
-        // 获取所有网关和扫描器节点
         const nodes = await NodeList.findAll({
             where: { 
                 NodeType: { [Op.in]: ['NDSGateway', 'NDSScanner'] }
@@ -24,13 +23,20 @@ async function notifyServices(action, config) {
                 ? '/nds/update-pool'
                 : '/control';
             
-            return axios.post(`${serviceUrl}${endpoint}`, {
-                action: 'nds',
-                config
-            }).catch(error => {
-                console.warn(`Failed to notify ${node.NodeType} ${serviceUrl}: ${error.message}`);
-                return null;
-            });
+            // 根据不同操作类型构造不同的请求体
+            const requestBody = {
+                action: action,  // 保持原始action类型
+                config: {
+                    ...config,
+                    operation: action  // 添加操作类型标记
+                }
+            };
+            
+            return axios.post(`${serviceUrl}${endpoint}`, requestBody)
+                .catch(error => {
+                    console.warn(`Failed to notify ${node.NodeType} ${serviceUrl}: ${error.message}`);
+                    return null;
+                });
         });
 
         await Promise.allSettled(notifyPromises);
