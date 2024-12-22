@@ -159,11 +159,14 @@ class NDSScanner:
                     semaphore = asyncio.Semaphore(2)
                     file_paths = [file['FilePath'] for file in new_files]
                     
-                    # 使用生成器表达式创建任务并直接执行
-                    all_zip_infos = []
+                    # 简化的批处理方式
+                    batch_size = 10
+                    batches = [file_paths[i:i + batch_size] for i in range(0, len(file_paths), batch_size)]
+                    
+                    # 并发执行所有批次
                     results = await asyncio.gather(*(
-                        self.limited_parse(nds_id, list(batch), semaphore)
-                        for batch in (islice(file_paths, i, i + 10) for i in range(0, len(file_paths), 10))
+                        self.limited_parse(nds_id, batch, semaphore)
+                        for batch in batches
                     ))
                     all_zip_infos = [info for batch in results for info in batch]
 
