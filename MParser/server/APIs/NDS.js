@@ -33,7 +33,7 @@ async function notifyServices(action, config) {
             }
         };
         
-        // 先���知所有网关节点
+        // 先知所有网关节点
         if (gatewayNodes.length > 0) {
             const gatewayPromises = gatewayNodes.map(node => {
                 const serviceUrl = `http://${node.Host}:${node.Port}`;
@@ -278,36 +278,33 @@ router.post('/files/diff', async (req, res) => {
     try {
         transaction = await sequelize.transaction();
         const { nds_id, files } = req.body;
-        if (!nds_id || !files || files.length === 0) {
-            return res.status(400).json({ message: '缺少必要参数' });
+        
+        if (!nds_id || !Array.isArray(files) || files.length === 0) {
+            return res.status(400).json({ message: '缺少必要参数或参数格式错误' });
         }
 
         // 创建临时表
         await sequelize.query(`
             CREATE TEMPORARY TABLE temp_files (
                 FilePath VARCHAR(250) NOT NULL,
-                INDEX (FilePath)  -- 添加索引提高性能
+                INDEX (FilePath)
             )
         `, { transaction });
 
         // 分批导入数据
         const batchSize = 1000;
-        for (let i = 0; i < files.length; i += batchSize) {
-            const batch = files.slice(i, i + batchSize);
+        const values = files.map(file => `(${sequelize.escape(file)})`);
+        
+        for (let i = 0; i < values.length; i += batchSize) {
+            const batch = values.slice(i, i + batchSize);
             await sequelize.query(
-                `INSERT INTO temp_files (FilePath) VALUES ${
-                    batch.map(() => '(?)').join(',')
-                }`,
-                {
-                    replacements: batch,
-                    transaction,
-                    type: sequelize.QueryTypes.INSERT
-                }
+                `INSERT INTO temp_files (FilePath) VALUES ${batch.join(',')}`,
+                { transaction }
             );
         }
 
         // 删除不存在的文件
-        const [result] = await sequelize.query(`
+        await sequelize.query(`
             DELETE FROM NDSFileList 
             WHERE NDSID = :nds_id 
             AND FilePath NOT IN (SELECT FilePath FROM temp_files)
@@ -341,6 +338,8 @@ router.post('/files/diff', async (req, res) => {
         });
 
     } catch (error) {
+        if (transaction) await transaction.rollback();
+        
         if (error.name === 'SequelizeUniqueConstraintError') {
             return res.status(409).json({
                 code: 409,
@@ -354,14 +353,10 @@ router.post('/files/diff', async (req, res) => {
             detail: error.message
         });
     } finally {
-        // 确保临时表被删除，使用独立的连接
         try {
-            await sequelize.query('DROP TEMPORARY TABLE IF EXISTS temp_files', {
-                raw: true,
-                type: sequelize.QueryTypes.RAW
-            });
+            await sequelize.query('DROP TEMPORARY TABLE IF EXISTS temp_files');
         } catch (e) {
-            console.log(e.message);
+            console.error('Error dropping temporary table:', e);
         }
     }
 });
