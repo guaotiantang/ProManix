@@ -106,6 +106,10 @@ const NDSFileList = sequelize.define('NDSFileList', {
     },
     indexes: [
         {
+            fields: ['FileHash'],
+            name: 'FileHash'
+        },
+        {
             fields: ['NDSID'],
             name: 'NDSID'
         },
