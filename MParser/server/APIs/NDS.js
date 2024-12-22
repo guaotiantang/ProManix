@@ -17,32 +17,48 @@ async function notifyServices(action, config) {
             }
         });
         
-        const notifyPromises = nodes.map(node => {
-            const serviceUrl = `http://${node.Host}:${node.Port}`;
-            const endpoint = node.NodeType === 'NDSGateway' 
-                ? '/nds/update-pool'
-                : '/control';
-            
-            // 处理 config 中的 dataValues
-            const configData = config.dataValues || config;
-            
-            // 构造请求体
-            const requestBody = {
-                action: action,
-                config: {
-                    ...configData,
-                    operation: action
-                }
-            };
-            
-            return axios.post(`${serviceUrl}${endpoint}`, requestBody)
-                .catch(error => {
-                    console.warn(`Failed to notify ${node.NodeType} ${serviceUrl}: ${error.message}`);
-                    return null;
-                });
-        });
+        // 分离网关和扫描器节点
+        const gatewayNodes = nodes.filter(node => node.NodeType === 'NDSGateway');
+        const scannerNodes = nodes.filter(node => node.NodeType === 'NDSScanner');
+        
+        // 处理 config 中的 dataValues
+        const configData = config.dataValues || config;
+        
+        // 构造请求体
+        const requestBody = {
+            action: action,
+            config: {
+                ...configData,
+                operation: action
+            }
+        };
+        
+        // 先���知所有网关节点
+        if (gatewayNodes.length > 0) {
+            const gatewayPromises = gatewayNodes.map(node => {
+                const serviceUrl = `http://${node.Host}:${node.Port}`;
+                return axios.post(`${serviceUrl}/nds/update-pool`, requestBody)
+                    .catch(error => {
+                        console.warn(`Failed to notify Gateway ${serviceUrl}: ${error.message}`);
+                        return null;
+                    });
+            });
+            await Promise.all(gatewayPromises);
+        }
+        
+        // 再通知所有扫描器节点
+        if (scannerNodes.length > 0) {
+            const scannerPromises = scannerNodes.map(node => {
+                const serviceUrl = `http://${node.Host}:${node.Port}`;
+                return axios.post(`${serviceUrl}/control`, requestBody)
+                    .catch(error => {
+                        console.warn(`Failed to notify Scanner ${serviceUrl}: ${error.message}`);
+                        return null;
+                    });
+            });
+            await Promise.all(scannerPromises);
+        }
 
-        await Promise.allSettled(notifyPromises);
     } catch (error) {
         console.error('Error in notification process:', error);
     }
@@ -321,9 +337,7 @@ router.post('/files/diff', async (req, res) => {
             new_files: newFiles.map(file => ({
                 NDSID: nds_id,
                 FilePath: file.FilePath
-            })),
-            deleted_count: result,  // 添加删除的文件数量
-            total_files: files.length
+            }))
         });
 
     } catch (error) {

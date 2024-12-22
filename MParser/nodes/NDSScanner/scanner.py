@@ -81,23 +81,57 @@ class NDSScanner:
             logger.error(f"Scan error: {str(e)}")
             return []
 
-    async def update_file_list(self, nds_id: int, files: List[str]) -> int:
-        """更新文件列表到数据库"""
+    async def parse_zip_info(self, nds_id: int, files: List[str]) -> List[Dict]:
+        """解析zip文件信息
+        返回格式: [
+            {
+                'file_name': 'xxx.zip',
+                'sub_file_name': 'xxx.xml',
+                'directory': '/path/to/dir',
+                'compress_size': 1234,
+                'file_size': 5678,
+                'enodebid': 123
+            },
+            ...
+        ]
+        """
+        try:
+            result = await self.gateway_client.post(
+                "nds/zip-info",
+                json={
+                    "nds_id": nds_id,
+                    "file_paths": files
+                }
+            )
+            # 提取成功的文件信息
+            if isinstance(result, dict) and 'data' in result:
+                zip_infos = []
+                for _, info in result['data'].items():
+                    if info['status'] == 'success':
+                        zip_infos.extend(info['info'])
+                return zip_infos
+            return []
+        except Exception as e:
+            logger.error(f"Parse ZIP info error: {str(e)}")
+            return []
+
+    async def diff_files(self, nds_id: int, files: List[str]) -> List[Dict]:
+        """获取新增文件信息列表"""
         try:
             result = await self.backend_client.post(
-                "nds/files/sync",
+                "nds/files/diff",
                 json={
                     "nds_id": nds_id,
                     "files": files
                 }
             )
-            # 后端返回的是包含 new_files 的对象
-            if isinstance(result, dict):
-                return result.get('new_files', 0)
-            return 0
+            # 获取完整的 new_files 列表（包含 NDSID 和 FilePath）
+            if isinstance(result, dict) and 'new_files' in result:
+                return result['new_files']  # 返回完整对象列表 [{NDSID: xxx, FilePath: xxx}, ...]
+            return []
         except Exception as e:
-            logger.error(f"Update file list error: {str(e)}")
-            return 0
+            logger.error(f"Diff files error: {str(e)}")
+            return []
 
     async def scan_loop(self, nds_config: Dict):
         """单个NDS的扫描循环"""
@@ -112,17 +146,35 @@ class NDSScanner:
 
                 # 执行扫描
                 files = await self.scan_nds(nds_config)
-                new_files = await self.update_file_list(nds_id, files)
+                new_files = await self.diff_files(nds_id, files)
 
                 # 更新状态
                 status.last_scan_time = start_time
-                scan_duration = (datetime.now() - start_time).total_seconds()
-                status.scan_duration = scan_duration
-                status.new_files_count = new_files
+                status.scan_duration = (datetime.now() - start_time).total_seconds()
+                status.new_files_count = len(new_files)
                 
+                # 处理新文件
+                if new_files:
+                    semaphore = asyncio.Semaphore(2)
+                    async def limited_parse(nds_id, file_paths):
+                        zip_infos = []
+                        async with semaphore:  # 确保最多两个协程同时执行
+                            zip_infos = await self.parse_zip_info(nds_id, file_paths)
+                        print(zip_infos[:10])
+                        return zip_infos
+                        
+                            
+                    # 构建任务列表，每批最多处理 10 个文件
+                    tasks = [
+                        limited_parse(nds_id, [file['FilePath'] for file in new_files[i:i + 10]])
+                        for i in range(0, len(new_files), 10)
+                    ]
+                    all_zip_infos = await asyncio.gather(*tasks)
+                    
+
                 # 计算下次扫描时间
                 wait_time = max(self.min_interval, 
-                              self.scan_interval - scan_duration)
+                              self.scan_interval - status.scan_duration)
                 status.next_scan_time = datetime.now().timestamp() + wait_time
                 status.is_scanning = False
 
