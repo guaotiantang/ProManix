@@ -1,5 +1,0 @@
-{
-    "python.analysis.extraPaths": [
-        "./MParser/nodes/NDSClientPools"
-    ]
-}
