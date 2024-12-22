@@ -116,20 +116,34 @@ async def get_status(nds_id: Optional[int] = None) -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/control/{action}")
+@app.post("/control")
 async def control_scanning(
     action: str,
-    nds_id: Optional[int] = None
+    nds_id: Optional[int] = None,
+    config: Optional[Dict] = None
 ) -> Dict[str, Any]:
-    """控制扫描服务"""
-    if action not in ["start", "stop"]:
+    """
+    控制扫描服务
+    - action: 操作类型 ("start", "stop", "nds")
+    - nds_id: 可选,指定NDS ID
+    - config: 当action为update时的配置信息
+    """
+    if action not in ["start", "stop", "update"]:
         raise HTTPException(
             status_code=400,
-            detail="Invalid action. Must be 'start' or 'stop'"
+            detail="Invalid action. Must be 'start', 'stop' or 'update'"
         )
     
     try:
-        if action == "start":
+        if action == "nds":
+            if not config:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Config is required for update action"
+                )
+            return await scanner.handle_nds_update(action, config)
+            
+        elif action == "start":
             if nds_id is not None:
                 raise HTTPException(
                     status_code=400,
@@ -140,6 +154,7 @@ async def control_scanning(
                 "code": 200,
                 "message": "Scanning started"
             }
+            
         else:  # stop
             if nds_id is not None:
                 await scanner.stop_nds_scan(nds_id)
@@ -153,14 +168,10 @@ async def control_scanning(
                     "code": 200,
                     "message": "All scanning stopped"
                 }
+                
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/control/nds")
-async def handle_nds_update(action: str, config: Dict) -> Dict[str, str]:
-    """处理NDS配置更新"""
-    return await scanner.handle_nds_update(action, config)
-
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
