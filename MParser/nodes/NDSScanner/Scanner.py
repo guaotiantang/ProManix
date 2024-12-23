@@ -133,7 +133,7 @@ class NDSScanner:
     async def parse_zip_info(self, nds_id: int, files: List[Dict]) -> List[Dict]:
         """解析ZIP文件信息
         
-        解析ZIP文件的详细信息，包括子文件列表��大小、时间等。
+        解析ZIP文件的详细信息，包括子文件列表、大小、时间等。
         返回符合NDSFileList格式的数据列表。
         """
         try:
