@@ -1,12 +1,12 @@
 import os
 import re
 import stat
+import struct
 import aioftp
 import asyncio
 import inspect
 import logging
 import asyncssh
-import struct
 from io import BytesIO
 from datetime import datetime
 from dataclasses import dataclass
@@ -150,7 +150,7 @@ class NDSClient:
                     await self.__ftp.connect(self.host, self.port)
                     await self.__ftp.login(self.user, self.passwd)
                     self.client = self.__ftp
-                elif self.protocol == "SFTP":
+                else:  # SFTP
                     self.__sftp = await asyncssh.connect(
                         host=self.host,
                         port=self.port,
@@ -159,8 +159,6 @@ class NDSClient:
                         known_hosts=None
                     )
                     self.client = await self.__sftp.start_sftp_client()
-                else:
-                    raise NDSError("Invalid protocol, only support FTP and SFTP", level=1)
                 logger.info(f"Successfully connected to {self.host}:{self.port} via {self.protocol}")
                 return
             except Exception as e:
@@ -184,37 +182,24 @@ class NDSClient:
                     return e.received_codes[0] in {200, 250, 257}  # 添加更多可能的成功状态码
                 except Exception:
                     return False
-            elif self.protocol == "SFTP":
+            else:  # SFTP
                 await self.client.lsdir("/")
-            else:
-                return False
+                return True
         except Exception as e:
             logger.warning(f"Connection check failed: {str(e)}")
             return False
 
     async def close_connect(self):
-        """关闭连接，处理所有清理工作"""
+        """关闭连接"""
         try:
-            # 先关闭文件流
-            if self.__stream:
-                await self.__stream.close()
-                self.__stream = None
-            
-            # 再关闭连接
             if self.protocol == "FTP" and self.__ftp:
                 await self.__ftp.quit()
-                self.__ftp = None
-            elif self.protocol == "SFTP":
-                if self.__sftp:
-                    await self.__sftp.close()
-                    self.__sftp = None
-            
+            elif self.protocol == "SFTP" and self.__sftp:
+                await self.__sftp.close()
         except Exception as e:
             logger.error(f"Error closing connection: {str(e)}")
         finally:
-            self.client = None
-            self.stream_path = None
-            self.__stream_offset = 0
+            self.client = self.__ftp = self.__sftp = None
 
     async def scan(self, scan_path: str, filter_pattern: Optional[str] = None) -> List[str]:
         """扫描远程目录并返回文件列表"""
@@ -239,6 +224,7 @@ class NDSClient:
                             files.append(str(path))
                     else:
                         files.append(str(path))
+
         elif self.protocol == "SFTP":
             #  使用队列方式代替函数递归
             stack = [scan_path]
@@ -270,14 +256,11 @@ class NDSClient:
 
     async def stat(self, file_path: str) -> Optional[Dict[str, Any]]:
         """获取文件状态信息"""
-        try: 
-            info_obj = await self.client.stat(file_path)
-            if not info_obj:
-                return None
-        except FileNotFoundError:
+        if not await self.file_exists(file_path):
             return None
-        except Exception as e:
-            raise NDSError(str(e), f"NDSClient.stat file_path:{file_path}", 1)
+        info_obj = await self.client.stat(file_path)
+        if not info_obj:
+            return None
 
         if self.protocol == "FTP":
             info = info_obj

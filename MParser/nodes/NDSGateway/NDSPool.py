@@ -37,9 +37,6 @@ class NDSPool:
         self._locks: Dict[str, asyncio.Lock] = {}  # server_id -> lock
         self._global_lock = asyncio.Lock()  # 用于修改字典结构的全局锁
         self._cleanup_task: Optional[asyncio.Task] = None
-        # 添加 host 信号量管理
-        self._host_semaphores: Dict[str, asyncio.Semaphore] = {}
-        self._host_limit = 10  # 每个host最大并发数
 
     async def _get_server_lock(self, server_id: str) -> asyncio.Lock:
         """获取服务器专用的锁"""
@@ -47,13 +44,6 @@ class NDSPool:
             if server_id not in self._locks:
                 self._locks[server_id] = asyncio.Lock()
             return self._locks[server_id]
-
-    async def _get_host_semaphore(self, host: str) -> asyncio.Semaphore:
-        """获取或创建host的信号量"""
-        async with self._global_lock:
-            if host not in self._host_semaphores:
-                self._host_semaphores[host] = asyncio.Semaphore(self._host_limit)
-            return self._host_semaphores[host]
 
     def add_server(self, server_id: str, config: PoolConfig) -> None:
         """添加服务器配置"""
@@ -158,18 +148,14 @@ class NDSPool:
     @asynccontextmanager
     async def get_client(self, server_id: str):
         """获取客户端连接的上下文管理器"""
-        config = self._configs[server_id]
-        host_semaphore = await self._get_host_semaphore(config.host)
-        
-        async with host_semaphore:  # 使用host信号量
-            conn = await self._get_connection(server_id)
-            try:
-                yield conn.client
-            finally:
-                lock = await self._get_server_lock(server_id)
-                async with lock:
-                    conn.in_use = False
-                    conn.last_used = datetime.now()
+        conn = await self._get_connection(server_id)
+        try:
+            yield conn.client
+        finally:
+            lock = await self._get_server_lock(server_id)
+            async with lock:
+                conn.in_use = False
+                conn.last_used = datetime.now()
 
     async def close(self) -> None:
         """关闭连接池"""
