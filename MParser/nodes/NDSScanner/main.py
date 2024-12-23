@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Union
 import os
 from dotenv import load_dotenv
 from Scanner import scanner  # 导入全局实例
@@ -46,7 +46,7 @@ async def register_node():
 
 # 注销节点
 async def unregister_node():
-    """注销当前服务器的节点记录"""
+    """注销当前服务器的���点记录"""
     print(f"Unregistering {NODE_TYPE} {SERVICE_NAME}")
     try:
         await backend_client.delete(
@@ -90,32 +90,16 @@ app.add_middleware(
 )
 
 @app.get("/status")
-async def get_status(nds_id: Optional[int] = None) -> Dict[str, Any]:
-    """获取扫描状态"""
-    try:
-        if nds_id is not None:
-            status = scanner.get_status(nds_id)
-            if status is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"NDS {nds_id} not found"
-                )
-            return {
-                "code": 200,
-                "data": {
-                    "nds_id": nds_id,
-                    "status": status
-                }
-            }
-        else:
-            return {
-                "code": 200,
-                "data": scanner.get_all_status()
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def get_status(nds_id: Optional[int] = None) -> Union[Dict[int, Dict], Dict]:
+    """获取扫描状态
+    
+    如果指定nds_id，返回单个NDS的状态
+    如果不指定nds_id，返回所有NDS的状态
+    """
+    status = scanner.get_status(nds_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"NDS {nds_id} not found")
+    return status
 
 @app.post("/control")
 async def control_scanning(data: Dict[str, Any] = Body(...)) -> Dict[str, Any]:

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
 from HttpClient import HttpClient
 import re
@@ -19,18 +19,22 @@ class ScanStatus:
         new_files_count: 新文件数量
         scan_duration: 扫描持续时间
         is_scanning: 是否正在扫描
+        last_scan_file: 上次扫描的文件路径
+        scan_file_info: 上次扫描文件的详细信息，包含 NDSID、FilePath、FileTime 等字段
     """
     last_scan_time: Optional[datetime] = None
     next_scan_time: Optional[datetime] = None
     new_files_count: int = 0
     scan_duration: float = 0.0
     is_scanning: bool = False
+    last_scan_file: Optional[str] = None
+    scan_file_info: Optional[Dict[str, Any]] = None
 
 class NDSScanner:
     """NDS文件扫描器
     
     负责扫描NDS服务器上的文件，解析文件信息并提交到后端数据库。
-    支持多NDS实例并发扫描，每个实例独立运行。
+    支持NDS实例并发扫描，每个实例独立运行。
     """
 
     def __init__(self):
@@ -129,7 +133,7 @@ class NDSScanner:
     async def parse_zip_info(self, nds_id: int, files: List[Dict]) -> List[Dict]:
         """解析ZIP文件信息
         
-        解析ZIP文件的详细信息，包括子文件列表、大小、时间等。
+        解析ZIP文件的详细信息，包括子文件列表��大小、时间等。
         返回符合NDSFileList格式的数据列表。
         """
         try:
@@ -212,6 +216,7 @@ class NDSScanner:
 
             for file_path, group_infos in file_groups.items():
                 try:
+                    
                     await self.backend_client.post(
                         "nds/files/batch",
                         json={"files": group_infos}
@@ -258,12 +263,27 @@ class NDSScanner:
                     batches = [handle_files[i:i + 2] for i in range(0, len(handle_files), 2)]
                     for batch in batches:
                         try:
+                            await asyncio.sleep(0.5)  # 批次间短暂延迟
                             zip_infos = await self.parse_zip_info(nds_id, batch)
                             if zip_infos:
+                                # 先记录状态，再提交文件信息
+                                last_file = batch[-1]
+                                status.last_scan_file = last_file.get('path')
+                                
+                                # 找到对应的 zip_info 记录
+                                matching_zip_infos = [info for info in zip_infos if info['FilePath'] == status.last_scan_file]
+                                if matching_zip_infos:
+                                    status.scan_file_info = matching_zip_infos[-1]
+                                
+                                # 最后提交文件信息
                                 await self.submit_file_infos(zip_infos)
-                            await asyncio.sleep(0.5)  # 批次间短暂延迟
+                                
+                            
                         except Exception as e:
                             logger.error(f"Failed to process batch: {str(e)}")
+                            # 清除可能不完整的状态记录
+                            status.last_scan_file = None
+                            status.scan_file_info = None
 
                 # 计算下次扫描时间
                 self.interval = max(self.min_interval, self.scan_interval - status.scan_duration)
@@ -358,32 +378,36 @@ class NDSScanner:
             await self.backend_client.close()
             await self.gateway_client.close()
 
-    def get_all_status(self) -> Dict[int, Dict]:
-        """获取所有NDS的扫描状态"""
-        return {
-            nds_id: {
-                "last_scan_time": status.last_scan_time.isoformat() if status.last_scan_time else None,
-                "next_scan_time": status.next_scan_time,
+    def get_status(self, nds_id: Optional[int] = None) -> Union[Dict[int, Dict], Optional[Dict]]:
+        """获取扫描状态
+        
+        Args:
+            nds_id: NDS ID，如果为None则返回所有NDS的状态
+            
+        Returns:
+            如果指定nds_id: 返回单个NDS的状态字典或None（如果不存在）
+            如果nds_id为None: 返回所有NDS的状态字典
+        """
+        def format_status(status: ScanStatus) -> Dict:
+            """格式化单个状态对象"""
+            return {
+                "last_scan_time": status.last_scan_time.strftime('%Y-%m-%d %H:%M:%S') if status.last_scan_time else None,
+                "next_scan_time": datetime.fromtimestamp(status.next_scan_time).strftime('%Y-%m-%d %H:%M:%S') if status.next_scan_time else None,
                 "new_files_count": status.new_files_count,
                 "scan_duration": status.scan_duration,
-                "is_scanning": status.is_scanning
+                "is_scanning": status.is_scanning,
+                "last_scan_file": status.last_scan_file,
+                "scan_file_info": status.scan_file_info
             }
+        
+        if nds_id is not None:
+            status = self.status.get(nds_id)
+            return format_status(status) if status else None
+        
+        return {
+            nds_id: format_status(status)
             for nds_id, status in self.status.items()
         }
-
-    def get_status(self, nds_id: int) -> Optional[Dict]:
-        """获取单个NDS的扫描状态"""
-        status = self.status.get(nds_id)
-        if not status:
-            return None
-            
-        return {
-            "last_scan_time": status.last_scan_time.isoformat() if status.last_scan_time else None,
-            "next_scan_time": status.next_scan_time,
-            "new_files_count": status.new_files_count,
-            "scan_duration": status.scan_duration,
-            "is_scanning": status.is_scanning
-        } 
 
 # 创建全局实例
 scanner = NDSScanner() 
