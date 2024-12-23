@@ -4,6 +4,17 @@ from dotenv import load_dotenv
 import os
 from NDSApi import router as nds_router, nds_api
 from fastapi.middleware.cors import CORSMiddleware
+import logging
+import uvicorn
+
+# 配置日志
+logging.getLogger("uvicorn.access").disabled = True  # 禁用访问日志
+logging.getLogger("uvicorn.error").propagate = False  # 防止错误日志重复
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 # 加载环境变量
 load_dotenv()
@@ -79,11 +90,33 @@ app.add_middleware(
 app.include_router(nds_router)
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=SERVICE_PORT,
-        reload=True
+        reload=True,
+        log_config={
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "()": "uvicorn.logging.DefaultFormatter",
+                    "fmt": "%(asctime)s - %(levelname)s - %(message)s",
+                    "datefmt": "%Y-%m-%d %H:%M:%S",
+                },
+            },
+            "handlers": {
+                "default": {
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stderr",
+                },
+            },
+            "loggers": {
+                "uvicorn": {"handlers": ["default"], "level": "WARNING"},
+                "uvicorn.error": {"level": "ERROR"},
+                "uvicorn.access": {"handlers": ["default"], "level": "ERROR", "propagate": False},
+            },
+        }
     )
 

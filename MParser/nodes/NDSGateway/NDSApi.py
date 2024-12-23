@@ -13,7 +13,6 @@ class NDSApi:
     def __init__(self):
         self.pool = NDSPool()
         self.backend_client = None
-        self.scan_semaphore = asyncio.Semaphore(100)
 
     async def init_api(self, backend_url: str):
         """初始化API"""
@@ -37,7 +36,7 @@ class NDSApi:
                         passwd=nds['Password']
                     )
                     self.pool.add_server(str(nds['ID']), pool_config)
-                    print(f"add pool nds[{nds['ID']}]")
+            print("Add NDSPool Count:", len(data.get('list', [])))
         except Exception as e:
             logger.error(f"Failed to initialize pool: {e}")
 
@@ -120,9 +119,9 @@ async def scan_files(data: dict = Body(...)) -> List[str]:
         if not nds_id or not scan_path:
             raise HTTPException(status_code=400, detail="Missing required parameters")
             
-        async with nds_api.scan_semaphore:
-            async with nds_api.pool.get_client(str(nds_id)) as client:
+        async with nds_api.pool.get_client(str(nds_id)) as client:
                 return await client.scan(scan_path, filter_pattern)
+            
     except Exception as e:
         logger.error(f"Scan files error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -146,41 +145,40 @@ async def get_zip_info(data: dict = Body(...)) -> Dict[str, Any]:
         if not nds_id or not file_paths:
             raise HTTPException(status_code=400, detail="Missing required parameters")
             
-        async with nds_api.scan_semaphore:
-            async with nds_api.pool.get_client(str(nds_id)) as client:
-                # 串行处理每个文件
-                zip_infos = {}
-                for file_path in file_paths:
-                    try:
-                        result = await client.get_zip_info(file_path)
-                        zip_infos[file_path] = {
-                            "status": "success",
-                            "info": [
-                                {
-                                    "file_name": info.file_name,
-                                    "sub_file_name": info.sub_file_name,
-                                    "directory": info.directory,
-                                    "header_offset": info.header_offset,
-                                    "compress_size": info.compress_size,
-                                    "file_size": info.file_size,
-                                    "flag_bits": info.flag_bits,
-                                    "compress_type": info.compress_type,
-                                    "enodebid": getattr(info, 'enodebid', None)
-                                }
-                                for info in result
-                            ]
-                        }
-                    except Exception as e:
-                        zip_infos[file_path] = {
-                            "status": "error",
-                            "error": str(e)
-                        }
-                        logger.error(f"Error processing {file_path}: {e}")
-                
-                return {
-                    "code": 200,
-                    "data": zip_infos
-                }
+        async with nds_api.pool.get_client(str(nds_id)) as client:
+            # 串行处理每个文件
+            zip_infos = {}
+            for file_path in file_paths:
+                try:
+                    result = await client.get_zip_info(file_path)
+                    zip_infos[file_path] = {
+                        "status": "success",
+                        "info": [
+                            {
+                                "file_name": info.file_name,
+                                "sub_file_name": info.sub_file_name,
+                                "directory": info.directory,
+                                "header_offset": info.header_offset,
+                                "compress_size": info.compress_size,
+                                "file_size": info.file_size,
+                                "flag_bits": info.flag_bits,
+                                "compress_type": info.compress_type,
+                                "enodebid": getattr(info, 'enodebid', None)
+                            }
+                            for info in result
+                        ]
+                    }
+                except Exception as e:
+                    zip_infos[file_path] = {
+                        "status": "error",
+                        "error": str(e)
+                    }
+                    logger.error(f"Error processing {file_path}: {e}")
+            
+            return {
+                "code": 200,
+                "data": zip_infos
+            }
                 
     except Exception as e:
         logger.error(f"Get ZIP info error: {str(e)}")
