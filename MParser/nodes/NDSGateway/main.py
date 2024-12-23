@@ -6,6 +6,7 @@ from NDSApi import router as nds_router, nds_api
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import uvicorn
+from NDSSocketServer import NDSSocketServer
 
 # 配置日志
 logging.getLogger("uvicorn.access").disabled = True  # 禁用访问日志
@@ -25,6 +26,9 @@ SERVICE_NAME = os.getenv('SERVICE_NAME')
 SERVICE_HOST = os.getenv('SERVICE_HOST')
 SERVICE_PORT = int(os.getenv('SERVICE_PORT', 10001))
 NODE_TYPE = os.getenv('NODE_TYPE', 'NDSGateway')
+
+# 创建socket服务器实例
+socket_server = NDSSocketServer()
 
 # 注册网关
 async def register_gateway():
@@ -64,8 +68,10 @@ async def lifespan(_: FastAPI):
     """应用生命周期管理"""
     await nds_api.init_api(BACKEND_URL)
     await register_gateway()
+    await socket_server.start()  # 启动socket服务器
     yield
     await unregister_gateway()
+    await socket_server.stop()   # 停止socket服务器
     await nds_api.close()
     os._exit(0)
 
