@@ -5,6 +5,7 @@ const NodeList = require('../Models/NodeList');
 const { Op } = require('sequelize');
 const axios = require('axios');
 const NDSFileList = require('../Models/NDSFileList');
+const NDSFiles = require('../Models/NDSFiles');
 const { sequelize } = require('../Libs/DataBasePool');
 const { Semaphore, Mutex } = require('async-mutex');
 
@@ -270,7 +271,7 @@ router.delete('/remove/:id', async (req, res) => {
         // 然后删除记录
         await NDSList.destroy({ where: { ID: id } });
         
-        // ���步通知，不等待结果
+        // 异步通知，不等待结果
         notifyAsync('remove', recordToDelete);
         
         res.json({ message: '删除成功' });
@@ -396,14 +397,14 @@ router.delete('/files/clean/:nds_id', async (req, res) => {
 // 批量添加文件记录
 router.post('/files/batch', async (req, res) => {
     // 获取互斥锁
-    const release = await batchMutex.acquire();
+    // const release = await batchMutex.acquire();
     let transaction;
     
     try {
         const { files } = req.body;
         
         if (!Array.isArray(files) || files.length === 0) {
-            release();
+            // release();
             return res.status(400).json({ message: '无效的文件数据' });
         }
 
@@ -468,9 +469,44 @@ router.post('/files/batch', async (req, res) => {
             message: '批量添加失败',
             error: error.message
         });
-    } finally {
-        // 释放互斥锁
-        release();
+    // } finally {
+    //     // 释放互斥锁
+    //     release();
+    }
+});
+
+
+// 获取NDS文件清单
+router.get('/files', async (req, res) => {
+    try {
+        const { nds_id } = req.query;
+        let query = {
+            attributes: ['FilePath'],
+            order: [['FilePath', 'ASC']]
+        };
+
+        // 如果指定了NDS_ID，添加条件过滤
+        if (nds_id) {
+            query.where = {
+                NDSID: nds_id
+            };
+        }
+
+        const files = await NDSFiles.findAll(query);
+        
+        // 只返回文件路径列表
+        const filePaths = files.map(file => file.FilePath);
+
+        res.json({
+            code: 200,
+            data: filePaths
+        });
+    } catch (error) {
+        console.error('Error fetching NDS files:', error);
+        res.status(500).json({
+            code: 500,
+            error: 'Failed to fetch NDS files'
+        });
     }
 });
 

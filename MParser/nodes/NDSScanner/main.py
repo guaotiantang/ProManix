@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from Scanner import scanner  # 导入全局实例
 from HttpClient import HttpClient
 from fastapi.params import Body
+import asyncio
 
 # 加载环境变量
 load_dotenv()
@@ -46,7 +47,7 @@ async def register_node():
 
 # 注销节点
 async def unregister_node():
-    """注销当前服务器的���点记录"""
+    """注销当前服务器的节点记录"""
     print(f"Unregistering {NODE_TYPE} {SERVICE_NAME}")
     try:
         await backend_client.delete(
@@ -62,6 +63,8 @@ async def unregister_node():
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """应用生命周期管理"""
+    print("等待网关启动")
+    await asyncio.sleep(10) ## 等待后端启动完成
     await init_api()  # 初始化API
     await scanner.init_scanner(BACKEND_URL, GATEWAY_URL)  # 初始化扫描器
     await register_node()  # 注册节点

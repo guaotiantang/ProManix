@@ -5,13 +5,16 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class HttpConfig:
     """HTTP客户端配置"""
     timeout: int = 3600  # 默认超时时间1小时
 
+
 class HttpClient:
     """HTTP客户端封装"""
+
     def __init__(self, base_url: str, config: Optional[HttpConfig] = None):
         self.base_url = base_url.rstrip('/')
         self.config = config or HttpConfig()
@@ -37,10 +40,10 @@ class HttpClient:
             self._session = None
 
     async def request(
-        self,
-        method: str,
-        endpoint: str,
-        **kwargs
+            self,
+            method: str,
+            endpoint: str,
+            **kwargs
     ) -> Union[Dict[str, Any], bytes, str]:
         """发送HTTP请求"""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -49,7 +52,7 @@ class HttpClient:
         try:
             async with self._session.request(method, url, **kwargs) as response:
                 response.raise_for_status()
-                
+
                 content_type = response.headers.get('Content-Type', '')
                 if 'application/json' in content_type:
                     return await response.json()
@@ -71,4 +74,4 @@ class HttpClient:
 
     async def delete(self, endpoint: str, **kwargs) -> Union[Dict[str, Any], bytes, str]:
         """发送DELETE请求"""
-        return await self.request('DELETE', endpoint, **kwargs) 
+        return await self.request('DELETE', endpoint, **kwargs)

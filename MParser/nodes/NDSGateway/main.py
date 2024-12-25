@@ -1,3 +1,5 @@
+import sys
+
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -6,7 +8,8 @@ from NDSApi import router as nds_router, nds_api
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import uvicorn
-from NDSSocketServer import NDSSocketServer
+# from NDSSocketServer import NDSSocketServer
+import asyncio
 
 # 配置日志
 logging.getLogger("uvicorn.access").disabled = True  # 禁用访问日志
@@ -27,8 +30,9 @@ SERVICE_HOST = os.getenv('SERVICE_HOST')
 SERVICE_PORT = int(os.getenv('SERVICE_PORT', 10001))
 NODE_TYPE = os.getenv('NODE_TYPE', 'NDSGateway')
 
-# 创建socket服务器实例
-socket_server = NDSSocketServer()
+
+# # 创建socket服务器实例
+# socket_server = NDSSocketServer()
 
 # 注册网关
 async def register_gateway():
@@ -47,10 +51,12 @@ async def register_gateway():
     except Exception as e:
         print(f"Failed to register node: {e}")
 
+
 # 注销网关
 async def unregister_gateway():
     """注销当前服务器的网关记录"""
     print(f"Unregistering {NODE_TYPE} {SERVICE_NAME}")
+
     try:
         await nds_api.backend_client.delete(
             "node/unregister",
@@ -61,19 +67,24 @@ async def unregister_gateway():
         )
     except Exception as e:
         print(f"Failed to unregister node: {e}")
-    os._exit(0)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """应用生命周期管理"""
+    print("等待后端启动")
+    await asyncio.sleep(5)  # 等待后端启动完成
     await nds_api.init_api(BACKEND_URL)
     await register_gateway()
-    await socket_server.start()  # 启动socket服务器
+    # await socket_server.start()  # 启动socket服务器
     yield
     await unregister_gateway()
-    await socket_server.stop()   # 停止socket服务器
     await nds_api.close()
-    os._exit(0)
+    print("Bye!")
+    # await socket_server.stop()   # 停止socket服务器
+    
+    sys.exit(0)
+
 
 app = FastAPI(
     title="NDS Client Pool Manager",
@@ -125,4 +136,3 @@ if __name__ == "__main__":
             },
         }
     )
-

@@ -9,7 +9,7 @@ const { sequelize } = require('../Libs/DataBasePool');
 router.get('/list', async (req, res) => {
     try {
         const { page = 1, pageSize = 50, field, keyword } = req.query;
-        
+
         let where = {};
         if (field && keyword && field !== 'all') {
             where[field] = {
@@ -24,14 +24,14 @@ router.get('/list', async (req, res) => {
                 ]
             };
         }
-        
+
         const { count, rows } = await CellData.findAndCountAll({
             where,
             offset: (page - 1) * pageSize,
             limit: parseInt(pageSize),
             order: [['CGI', 'ASC']]
         });
-        
+
         // 添加数据类型转换
         const formattedRows = rows.map(row => {
             const data = row.toJSON();
@@ -59,25 +59,25 @@ router.get('/list', async (req, res) => {
 router.post('/add', async (req, res) => {
     try {
         const data = req.body;
-        
+
         // 检查 CGI 是否已存在
         const existingRecord = await CellData.findOne({
             where: { CGI: data.CGI }
         });
-        
+
         if (existingRecord) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 message: 'CGI已存在, 不能重复添加'
             });
         }
 
         await CellData.create(data);
-        res.json({ 
+        res.json({
             message: '新增成功',
-            code: 200 
+            code: 200
         });
     } catch (error) {
-        res.status(500).json({ 
+        res.status(500).json({
             message: error.message,
             code: 500
         });
@@ -91,11 +91,11 @@ router.post('/update', async (req, res) => {
         const result = await CellData.update(data, {
             where: { CGI: data.CGI }
         });
-        
+
         if (result[0] === 0) {
             return res.status(404).json({ message: '没有字段需要更新' });
         }
-        
+
         res.json({ message: '更新成功' });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -109,11 +109,11 @@ router.delete('/remove/:cgi', async (req, res) => {
         const result = await CellData.destroy({
             where: { CGI: cgi }
         });
-        
+
         if (result === 0) {
             return res.status(404).json({ message: '未找到要删除的记录' });
         }
-        
+
         res.json({ message: '删除成功' });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -136,7 +136,7 @@ router.post('/batchDelete', async (req, res) => {
             }
         });
 
-        res.json({ 
+        res.json({
             message: '批量删除成功',
             deletedCount: result
         });
@@ -152,7 +152,7 @@ router.get('/check/:cgi', async (req, res) => {
         const exists = await CellData.findOne({
             where: { CGI: cgi }
         });
-        
+
         res.json({ exists: !!exists });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -162,7 +162,7 @@ router.get('/check/:cgi', async (req, res) => {
 // 文件上传
 router.post('/upload', async (req, res) => {
     const transaction = await sequelize.transaction();
-    
+
     try {
         if (!req.files || !req.files.file) {
             return res.status(400).json({ message: '没有上传文件' });
@@ -175,8 +175,8 @@ router.post('/upload', async (req, res) => {
 
         const sheet = workbook.Sheets['CellData'];
         const data = xlsx.utils.sheet_to_json(sheet);
-        const results = { 
-            total: data.length, 
+        const results = {
+            total: data.length,
             inserted: 0,
             updated: 0,
             unchanged: 0,
@@ -189,7 +189,7 @@ router.post('/upload', async (req, res) => {
             where: { CGI: cgis },
             transaction
         });
-        
+
         // 转换为Map以便快速查找
         const existingMap = new Map(
             existingRecords.map(record => [record.CGI, record])
@@ -198,12 +198,12 @@ router.post('/upload', async (req, res) => {
         // 准备批量操作的数组
         const toCreate = [];
         const toUpdate = [];
-        
+
         // 分类处理
         for (const row of data) {
             try {
                 const existingRecord = existingMap.get(row.CGI);
-                
+
                 if (existingRecord) {
                     const hasChanges = Object.keys(row).some(key => {
                         if (key === 'CGI') return false;
@@ -236,10 +236,10 @@ router.post('/upload', async (req, res) => {
         if (toCreate.length > 0) {
             await CellData.bulkCreate(toCreate, { transaction });
         }
-        
+
         if (toUpdate.length > 0) {
             await Promise.all(
-                toUpdate.map(row => 
+                toUpdate.map(row =>
                     CellData.update(row, {
                         where: { CGI: row.CGI },
                         transaction
@@ -251,12 +251,12 @@ router.post('/upload', async (req, res) => {
         await transaction.commit();
 
         const allSkipped = results.failed === 0;
-        const successRate = allSkipped 
+        const successRate = allSkipped
             ? '100%'
             : `${(((results.inserted + results.updated) / results.total) * 100).toFixed(2)}%`;
 
-        res.json({ 
-            message: '文件处理成功', 
+        res.json({
+            message: '文件处理成功',
             results: {
                 ...results,
                 success: results.inserted + results.updated,
@@ -265,9 +265,9 @@ router.post('/upload', async (req, res) => {
         });
     } catch (error) {
         await transaction.rollback();
-        res.status(500).json({ 
+        res.status(500).json({
             message: '文件处理失败',
-            error: error.message 
+            error: error.message
         });
     }
 });
@@ -280,7 +280,7 @@ router.get('/export', async (_req, res) => {
         const workbook = xlsx.utils.book_new();
         const worksheet = xlsx.utils.json_to_sheet(data.map(item => item.toJSON()));
         xlsx.utils.book_append_sheet(workbook, worksheet, 'CellData');
-        
+
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', 'attachment; filename=CellData.xlsx');
         res.send(xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' }));

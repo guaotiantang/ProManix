@@ -107,10 +107,13 @@ class NDSScanner:
         每个文件包含path和type信息。
         """
         try:
+            print(f"扫描NDS[{nds_config['ID']}]")
             # 扫描MRO文件
             mro_files = await self._scan_files(nds_config['ID'], nds_config['MRO_Path'], nds_config['MRO_Filter'], "MRO")
             # 扫描MDT文件
             mdt_files = await self._scan_files(nds_config['ID'], nds_config['MDT_Path'], nds_config['MDT_Filter'], "MDT")
+            
+            print(f"NDS FilesCount[{len(list(chain(mro_files, mdt_files)))}]")
             return list(chain(mro_files, mdt_files))
 
         except Exception as e:
@@ -138,6 +141,7 @@ class NDSScanner:
         """
         try:
             json_data = {"nds_id": nds_id, "file_paths": [file['FilePath'] for file in files]}
+            print(f"NDS[{nds_id}]parse_zip_info")
             result = await self.gateway_client.post("nds/zip-info", json=json_data)
             return self._process_zip_info(nds_id, files, result)
         except Exception as e:
@@ -196,8 +200,9 @@ class NDSScanner:
     async def diff_files(self, nds_id: int, files: List[Dict]) -> List[Dict]:
         """获取新增文件信息列表"""
         try:
-            json_data = {"nds_id": nds_id, "files": [{"path": file["path"], "type": file["type"]} for file in files]}
-            result = await self.backend_client.post("nds/files/diff", json=json_data)
+            
+            result = await self.backend_client.get(f"nds/files?nds_id={str(nds_id)}")
+            
             return result['new_files'] if isinstance(result, dict) and 'new_files' in result else []
         except Exception as e:
             logger.error(f"Diff files error: {str(e)}")
@@ -233,7 +238,6 @@ class NDSScanner:
         """单个NDS的扫描循环"""
         nds_id = nds_config['ID']
         self.status[nds_id] = ScanStatus()
-        
         while self._running:
             try:
                 status = self.status[nds_id]
@@ -257,7 +261,7 @@ class NDSScanner:
                 status.new_files_count = len(new_files)
                 
                 # 处理新文件, 每次最多处理前10个文件，避免协程等待时间过长
-                handle_files = new_files[:10]
+                handle_files = new_files
                 if handle_files:
                     # 处理新文件, 每次扫描2个文件，避免长时间等待
                     batches = [handle_files[i:i + 2] for i in range(0, len(handle_files), 2)]

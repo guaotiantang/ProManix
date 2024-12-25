@@ -8,6 +8,7 @@ from NDSClient import NDSClient, NDSError
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class PoolConfig:
     """连接池配置"""
@@ -21,6 +22,7 @@ class PoolConfig:
     retry_count: int = 3  # 重试次数
     wait_timeout: int = 3600  # 等待连接的超时时间(秒)，默认1小时
 
+
 @dataclass
 class ConnectionInfo:
     """连接信息"""
@@ -28,15 +30,18 @@ class ConnectionInfo:
     in_use: bool = False
     last_used: datetime = datetime.now()
 
+
 class NDSPool:
     """NDS连接池管理器"""
-    
+
     def __init__(self):
         self._pools: Dict[str, List[ConnectionInfo]] = {}  # server_id -> connections
         self._configs: Dict[str, PoolConfig] = {}  # server_id -> config
         self._locks: Dict[str, asyncio.Lock] = {}  # server_id -> lock
         self._global_lock = asyncio.Lock()  # 用于修改字典结构的全局锁
         self._cleanup_task: Optional[asyncio.Task] = None
+
+        self.nds_log = {}
 
     async def _get_server_lock(self, server_id: str) -> asyncio.Lock:
         """获取服务器专用的锁"""
@@ -49,9 +54,10 @@ class NDSPool:
         """添加服务器配置"""
         self._configs[server_id] = config
         self._pools[server_id] = []
+        self.nds_log[server_id] = 0
         if server_id not in self._locks:
             self._locks[server_id] = asyncio.Lock()
-        
+
         if not self._cleanup_task:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
@@ -63,7 +69,8 @@ class NDSPool:
             host=config.host,
             port=config.port,
             user=config.user,
-            passwd=config.passwd
+            passwd=config.passwd,
+            nds_id=server_id
         )
         await client.connect()
         return client
@@ -71,6 +78,7 @@ class NDSPool:
     async def _get_connection(self, server_id: str) -> ConnectionInfo:
         """获取一个可用连接"""
         if server_id not in self._configs:
+            print(f"Server {server_id} not configured")
             raise NDSError(f"Server {server_id} not configured")
 
         lock = await self._get_server_lock(server_id)
@@ -84,6 +92,10 @@ class NDSPool:
                                 conn.in_use = True
                                 conn.last_used = datetime.now()
                                 return conn
+                            else:
+                                logger.warning(f"NDS[{server_id}] Connection check failed")
+                                await self._close_connection(conn)
+                                self._pools[server_id].remove(conn)
                         except Exception as e:
                             logger.warning(f"Connection check failed: {e}")
                             await self._close_connection(conn)
@@ -121,7 +133,7 @@ class NDSPool:
         # 先获取所有需要处理的服务器ID
         async with self._global_lock:
             server_ids = list(self._pools.keys())
-        
+
         # 逐个处理每个服务器的连接
         for server_id in server_ids:
             try:
@@ -129,17 +141,17 @@ class NDSPool:
                 async with lock:
                     if server_id not in self._pools:  # 再次检查，因为可能已被删除
                         continue
-                        
+
                     connections = self._pools[server_id]
                     max_idle = self._configs[server_id].max_idle_time
                     idle_limit = datetime.now() - timedelta(seconds=max_idle)
-                    
+
                     to_remove = []
                     for conn in connections:
                         if not conn.in_use and conn.last_used < idle_limit:
                             await self._close_connection(conn)
                             to_remove.append(conn)
-                    
+
                     for conn in to_remove:
                         connections.remove(conn)
             except Exception as e:
@@ -174,7 +186,7 @@ class NDSPool:
         """移除服务器配置及其所有连接"""
         if server_id not in self._configs:
             return False
-            
+
         # 先获取全局锁
         async with self._global_lock:
             # 获取服务器锁（如果存在）
@@ -185,12 +197,12 @@ class NDSPool:
                         # 关闭所有连接
                         for conn in self._pools[server_id]:
                             await self._close_connection(conn)
-                        
+
                         # 移除配置和连接池
                         self._pools.pop(server_id, None)
                         self._configs.pop(server_id, None)
                         self._locks.pop(server_id, None)
-                        
+
                         return True
                     except Exception as e:
                         logger.error(f"Error removing server {server_id}: {e}")
@@ -208,10 +220,10 @@ class NDSPool:
         """获取连接池状态"""
         if server_id not in self._configs:
             raise NDSError(f"Server {server_id} not configured")
-            
+
         connections = self._pools[server_id]
         active = sum(1 for conn in connections if conn.in_use)
-        
+
         return {
             "total_connections": len(connections),
             "active_connections": active,
