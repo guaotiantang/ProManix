@@ -126,6 +126,10 @@ const NDSFileList = sequelize.define('NDSFileList', {
             name: 'eNodeBID'
         },
         {
+            fields: ['Parsed'],
+            name: 'Parsed'
+        },
+        {
             fields: ['NDSID', 'FilePath'],
             name: 'NDSID_FilePath'
         },

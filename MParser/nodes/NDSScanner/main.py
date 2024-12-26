@@ -8,6 +8,7 @@ from Scanner import scanner  # 导入全局实例
 from HttpClient import HttpClient
 from fastapi.params import Body
 import asyncio
+import aiohttp
 
 # 加载环境变量
 load_dotenv()
@@ -27,6 +28,22 @@ async def init_api():
     """初始化API"""
     global backend_client
     backend_client = HttpClient(BACKEND_URL)
+
+async def check_gateway_ready():
+    """检查网关是否就绪"""
+    print(f"Waiting for Gateway to be ready at {GATEWAY_URL}")
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{GATEWAY_URL}/") as response:
+                    data = await response.json()
+                    if response.status == 200 and data.get("code") == 200:
+                        print("Gateway is ready")
+                        return True
+        except Exception:
+            pass
+        finally:
+            await asyncio.sleep(1)
 
 # 注册节点
 async def register_node():
@@ -63,9 +80,9 @@ async def unregister_node():
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """应用生命周期管理"""
-    print("等待网关启动")
-    await asyncio.sleep(10) ## 等待后端启动完成
+    print("Initializing Scanner Service...")
     await init_api()  # 初始化API
+    await check_gateway_ready()  # 等待网关就绪
     await scanner.init_scanner(BACKEND_URL, GATEWAY_URL)  # 初始化扫描器
     await register_node()  # 注册节点
     await scanner.start_scanning()  # 启动扫描器
@@ -134,7 +151,7 @@ async def control_scanning(data: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             await scanner.start_scanning()
             return {
                 "code": 200,
-                "message": "Scanning started"
+                "message": "Scanner started"
             }
             
         else:  # stop
@@ -143,13 +160,13 @@ async def control_scanning(data: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
                 await scanner.stop_nds_scan(nds_id)
                 return {
                     "code": 200,
-                    "message": f"NDS {nds_id} scanning stopped"
+                    "message": f"NDS {nds_id} Scanner stopped"
                 }
             else:
                 await scanner.stop_scanning()
                 return {
                     "code": 200,
-                    "message": "All scanning stopped"
+                    "message": "All Scanner stopped"
                 }
                 
     except Exception as e:

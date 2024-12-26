@@ -126,7 +126,7 @@ async def scan_files(data: dict = Body(...)) -> List[str]:
         async with nds_api.pool.get_client(str(nds_id)) as client:
             return await client.scan(scan_path, filter_pattern)
     except Exception as e:
-        logger.error(f"Scan files error: {str(e)}")
+        logger.error(f"NDS[{data.get('nds_id')}]Scan files error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -187,3 +187,4 @@ async def get_zip_info(data: dict = Body(...)):
     except Exception as e:
         logger.error(f"Get ZIP info error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+

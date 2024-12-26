@@ -104,7 +104,7 @@ class NDSClient:
         self.user = user
         self.passwd = passwd
         self.pool_num = pool_num
-        self.ID = int(nds_id)
+        self.ID = self.ID = int(nds_id) if nds_id is not None else None
 
         # 私有属性
         self.__ftp = None
@@ -127,9 +127,10 @@ class NDSClient:
         finally:
             await self.close_connect()
 
-    async def connect(self):
+    async def connect(self, retry_count: int = None):
         """建立连接"""
-        for attempt in range(self.RETRY_COUNT):
+        retry = self.RETRY_COUNT if not retry_count else retry_count
+        for attempt in range(retry):
             try:
                 if self.protocol == "FTP":
                     self.__ftp = aioftp.Client()
@@ -145,11 +146,10 @@ class NDSClient:
                         known_hosts=None
                     )
                     self.client = await self.__sftp.start_sftp_client()
-                logger.info(f"Successfully connected to {self.host}:{self.port} via {self.protocol}")
                 return
             except Exception as e:
                 if attempt == self.RETRY_COUNT - 1:
-                    raise NDSConnectError(f"Connect error after {self.RETRY_COUNT} attempts: {str(e)}", level=1)
+                    raise NDSConnectError(f"Connect error after {retry} attempts: {str(e)}", level=1)
                 await asyncio.sleep(self.RETRY_DELAY)
 
     async def check_connect(self) -> bool:
@@ -161,18 +161,33 @@ class NDSClient:
             if self.protocol == "FTP":
                 try:
                     await self.client.change_directory("/")
-                    # FTP服务器返回250表示操作成功
-                    return True  # 只要没有抛出异常就说明连接正常
+                    return True
                 except aioftp.StatusCodeError as e:
                     # 有些FTP服务器可能返回不同的成功状态码
-                    return e.received_codes[0] in {200, 250, 257}  # 添加更多可能的成功状态码
+                    return e.received_codes[0] in {'200', '250', '212', '226', '257'}
                 except Exception:
                     return False
             else:  # SFTP
                 if not self.__sftp:
                     return False
-                await self.client.lsdir("/")
-                return True
+                # 定义检查函数列表
+                checks = [
+                    lambda: self.client.realpath('.'),
+                    lambda: self.client.realpath('/'),
+                    lambda: self.client.stat('/'),
+                    lambda: self.client.stat('.'),
+                    lambda: self.client.lstat("."),
+                    lambda: self.client.listdir('/')
+                ]
+                # 尝试执行每个检查，任意一个成功就返回 True
+                for check in checks:
+                    try:
+                        await check()
+                        return True
+                    except Exception:
+                        continue
+                # 所有检查都失败返回 False
+                return False
         except Exception as e:
             logger.warning(f"Connection check failed: {str(e)}")
             return False
@@ -183,13 +198,13 @@ class NDSClient:
             if self.protocol == "FTP" and self.__ftp:
                 try:
                     await self.__ftp.quit()
-                except Exception as e:
-                    logger.warning(f"Error closing FTP connection: {e}")
+                except Exception:
+                    pass
             elif self.protocol == "SFTP" and self.__sftp:
                 try:
                     await self.__sftp.close()
-                except Exception as e:
-                    logger.warning(f"Error closing SFTP connection: {e}")
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Error in close_connect: {e}")
         finally:
@@ -210,14 +225,20 @@ class NDSClient:
 
         if self.client is None:
             raise NDSError("Not init NDS Client", "NDSClient.scan", -1)
+
         if self.protocol == "FTP":
-            async for path, info in self.client.list(scan_path, recursive=True):
-                if info.get('type') == 'file':
-                    if use_filter:
-                        if re.search(filter_pattern, str(path)):
+
+            try:
+                async for path, info in self.client.list(scan_path, recursive=True):
+                    if info.get('type') == 'file':
+                        if use_filter:
+                            if re.search(filter_pattern, str(path)):
+                                files.append(str(path))
+                        else:
                             files.append(str(path))
-                    else:
-                        files.append(str(path))
+            except Exception as e:
+                await self.close_connect()
+                raise e
 
         elif self.protocol == "SFTP":
             #  使用队列方式代替函数递归

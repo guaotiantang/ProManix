@@ -4,10 +4,19 @@ const NDSList = require('../Models/NDSList');
 const NodeList = require('../Models/NodeList');
 const { Op } = require('sequelize');
 const axios = require('axios');
+const crypto = require('crypto');
 const NDSFileList = require('../Models/NDSFileList');
 const NDSFiles = require('../Models/NDSFiles');
 const { sequelize } = require('../Libs/DataBasePool');
 const { Semaphore, Mutex } = require('async-mutex');
+const fileQueue = require('../Libs/QueueManager');
+
+// 定义常量
+const BATCH_DELAY = 100;  // 批处理间隔时间（毫秒）
+const BATCH_SIZE = {
+    INSERT: 200,  // 插入批次大小
+    DELETE: 200   // 删除批次大小
+};
 
 // 创建全局信号量，限制总并发数
 const globalSemaphore = new Semaphore(10);  // 限制总并发为10
@@ -280,98 +289,6 @@ router.delete('/remove/:id', async (req, res) => {
     }
 });
 
-// 获取差异文件并删除不存在的文件(使用数据库比较)
-router.post('/files/diff', async (req, res) => {
-    let transaction;
-    try {
-        const { nds_id, files } = req.body;
-        
-        if (!nds_id || !Array.isArray(files) || files.length === 0) {
-            return res.status(400).json({ message: '缺少必要参数或参数格式错误' });
-        }
-
-        transaction = await sequelize.transaction();
-
-        // 创建临时表，添加类型字段
-        await sequelize.query(`
-            CREATE TEMPORARY TABLE temp_files (
-                FilePath VARCHAR(250) NOT NULL,
-                DataType VARCHAR(20) NOT NULL,
-                INDEX (FilePath)
-            )
-        `, { transaction });
-
-        // 分批导入数据，包含文件类型
-        const batchSize = 1000;
-        const values = files.map(file => 
-            `(${sequelize.escape(file.path)}, ${sequelize.escape(file.type)})`
-        );
-        
-        for (let i = 0; i < values.length; i += batchSize) {
-            const batch = values.slice(i, i + batchSize);
-            await sequelize.query(
-                `INSERT INTO temp_files (FilePath, DataType) VALUES ${batch.join(',')}`,
-                { transaction }
-            );
-        }
-
-        // 删除不存在的文件，同时匹配文件类型
-        await sequelize.query(`
-            DELETE FROM NDSFileList 
-            WHERE NDSID = :nds_id 
-            AND NOT EXISTS (
-                SELECT 1 FROM temp_files 
-                WHERE temp_files.FilePath = NDSFileList.FilePath 
-                AND temp_files.DataType = NDSFileList.DataType
-            )
-        `, {
-            replacements: { nds_id },
-            transaction
-        });
-
-        // 获取新文件列表，包含类型信息
-        const [newFiles] = await sequelize.query(`
-            SELECT DISTINCT t.FilePath, t.DataType
-            FROM temp_files t
-            LEFT JOIN NDSFileList n ON 
-                n.FilePath = t.FilePath 
-                AND n.NDSID = :nds_id
-                AND n.DataType = t.DataType
-            WHERE n.FileHash IS NULL
-        `, {
-            replacements: { nds_id },
-            transaction
-        });
-
-        await transaction.commit();
-
-        res.json({
-            new_files: newFiles.map(file => ({
-                NDSID: nds_id,
-                FilePath: file.FilePath,
-                DataType: file.DataType
-            }))
-        });
-
-    } catch (error) {
-        if (transaction && !transaction.finished) {
-            await transaction.rollback();
-        }
-        
-        res.status(500).json({
-            code: 500,
-            message: '数据库操作失败',
-            detail: error.message
-        });
-    } finally {
-        try {
-            await sequelize.query('DROP TEMPORARY TABLE IF EXISTS temp_files');
-        } catch (e) {
-            console.error('Error dropping temporary table:', e);
-        }
-    }
-});
-
 
 // 清理NDS相关文件记录
 router.delete('/files/clean/:nds_id', async (req, res) => {
@@ -396,86 +313,92 @@ router.delete('/files/clean/:nds_id', async (req, res) => {
 
 // 批量添加文件记录
 router.post('/files/batch', async (req, res) => {
-    // 获取互斥锁
-    // const release = await batchMutex.acquire();
-    let transaction;
+    const { files } = req.body;
     
-    try {
-        const { files } = req.body;
-        
-        if (!Array.isArray(files) || files.length === 0) {
-            // release();
-            return res.status(400).json({ message: '无效的文件数据' });
-        }
-
-        transaction = await sequelize.transaction();
-        
-        // 使用原生SQL进行批量插入
-        const values = files.map(file => `(
-            MD5(CONCAT(
-                ${sequelize.escape(file.NDSID)}, '_',
-                ${sequelize.escape(file.FilePath)}, '_',
-                ${sequelize.escape(file.DataType)}, '_',
-                ${sequelize.escape(file.SubFileName)}
-            )),
-            ${sequelize.escape(file.NDSID)},
-            ${sequelize.escape(file.FilePath)},
-            ${sequelize.escape(file.FileTime)},
-            ${sequelize.escape(file.DataType)},
-            ${sequelize.escape(file.eNodeBID)},
-            ${sequelize.escape(file.SubFileName)},
-            ${sequelize.escape(file.HeaderOffset)},
-            ${sequelize.escape(file.CompressSize)},
-            ${sequelize.escape(file.FileSize)},
-            ${sequelize.escape(file.FlagBits)},
-            ${sequelize.escape(file.CompressType)},
-            ${sequelize.escape(file.Parsed)},
-            NOW(),
-            NOW()
-        )`);
-
-        // 分批执行，每批1000条
-        const batchSize = 1000;
-        let insertedCount = 0;
-
-        // 串行处理每个批次
-        for (let i = 0; i < values.length; i += batchSize) {
-            const batch = values.slice(i, i + batchSize);
-            const result = await sequelize.query(`
-                INSERT IGNORE INTO NDSFileList (
-                    FileHash,
-                    NDSID, FilePath, FileTime, DataType, 
-                    eNodeBID, SubFileName, HeaderOffset, 
-                    CompressSize, FileSize, FlagBits, 
-                    CompressType, Parsed, CreateTime, UpdateTime
-                ) VALUES ${batch.join(',')}
-            `, { transaction });
-            
-            insertedCount += result[0].affectedRows || 0;
-        }
-
-        await transaction.commit();
-        
-        res.json({
-            message: '批量添加成功',
-            total: files.length,
-            created: insertedCount
+    if (!Array.isArray(files)) {
+        return res.status(400).json({ 
+            code: 400,
+            message: '无效的文件数据' 
         });
-        
-    } catch (error) {
-        if (transaction) await transaction.rollback();
-        
-        res.status(500).json({
-            message: '批量添加失败',
-            error: error.message
-        });
-    // } finally {
-    //     // 释放互斥锁
-    //     release();
     }
+
+    // 分批处理，每批1000条
+    const BATCH_SIZE = 1000;
+    const taskIds = [];
+
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+        const batch = files.slice(i, i + BATCH_SIZE);
+        const taskId = `${Date.now()}_${i}`;
+        
+        await fileQueue.enqueue({
+            type: 'INSERT',
+            data: { files: batch },
+            taskId
+        });
+        
+        taskIds.push({
+            taskId,
+            filesCount: batch.length
+        });
+    }
+
+    res.json({
+        code: 200,
+        message: 'Tasks added to queue',
+        data: {
+            totalFiles: files.length,
+            batches: taskIds
+        }
+    });
 });
 
 
+// 批量删除文件记录
+router.post('/files/remove', async (req, res) => {
+    const { nds_id, files } = req.body;
+    
+    if (!nds_id || !Array.isArray(files)) {
+        return res.status(400).json({ 
+            code: 400,
+            message: '参数错误' 
+        });
+    }
+
+    // 转换文件格式，添加 NDSID
+    const fileRecords = files.map(filePath => ({
+        NDSID: nds_id,
+        FilePath: filePath
+    }));
+
+    // 分批处理，每批1000条
+    const BATCH_SIZE = 1000;
+    const taskIds = [];
+
+    for (let i = 0; i < fileRecords.length; i += BATCH_SIZE) {
+        const batch = fileRecords.slice(i, i + BATCH_SIZE);
+        const taskId = `${Date.now()}_${i}`;
+        
+        await fileQueue.enqueue({
+            type: 'DELETE',
+            data: { files: batch },
+            taskId
+        });
+        
+        taskIds.push({
+            taskId,
+            filesCount: batch.length
+        });
+    }
+
+    res.json({
+        code: 200,
+        message: 'Tasks added to queue',
+        data: {
+            totalFiles: files.length,
+            batches: taskIds
+        }
+    });
+});
 // 获取NDS文件清单
 router.get('/files', async (req, res) => {
     try {
@@ -508,6 +431,120 @@ router.get('/files', async (req, res) => {
             error: 'Failed to fetch NDS files'
         });
     }
+});
+
+// 检查NDS连接
+router.post('/check', async (req, res) => {
+    try {
+        const { nds_id, config } = req.body;
+        let ndsConfig;
+
+        // 1. 如果提供了 nds_id，优先使用数据库中的配置
+        if (nds_id) {
+            const ndsRecord = await NDSList.findByPk(nds_id);
+            if (!ndsRecord) {
+                return res.status(404).json({
+                    code: 404,
+                    message: `NDS ID ${nds_id} not found`
+                });
+            }
+            ndsConfig = {
+                Protocol: ndsRecord.Protocol,
+                Address: ndsRecord.Address,
+                Port: ndsRecord.Port,
+                Account: ndsRecord.Account,
+                Password: ndsRecord.Password
+            };
+        }
+        // 2. 如果没有 nds_id 但提供了配置，使用提供的配置
+        else if (config) {
+            const requiredFields = ['Protocol', 'Address', 'Port', 'Account', 'Password'];
+            const missingFields = requiredFields.filter(field => !(field in config));
+            
+            if (missingFields.length > 0) {
+                return res.status(400).json({
+                    code: 400,
+                    message: `Missing required fields: ${missingFields.join(', ')}`
+                });
+            }
+            ndsConfig = config;
+        }
+        // 3. 如果都没有提供，返回错误
+        else {
+            return res.status(400).json({
+                code: 400,
+                message: 'Either nds_id or config must be provided'
+            });
+        }
+
+        // 4. 查找可用的网关节点
+        const gateway = await NodeList.findOne({
+            where: { 
+                NodeType: 'NDSGateway'
+            }
+        });
+
+        if (!gateway) {
+            return res.status(503).json({
+                code: 503,
+                message: 'No available gateway node'
+            });
+        }
+
+        // 5. 先检查网关状态
+        try {
+            const gatewayStatus = await axios.get(`http://${gateway.Host}:${gateway.Port}/`);
+            if (gatewayStatus.data.code !== 200) {
+                return res.status(503).json({
+                    code: 503,
+                    message: 'Gateway is not ready',
+                    error: gatewayStatus.data.message
+                });
+            }
+        } catch (error) {
+            return res.status(503).json({
+                code: 503,
+                message: 'Gateway is not accessible',
+                error: error.message
+            });
+        }
+
+        // 6. 调用网关的检查接口
+        const response = await axios.post(
+            `http://${gateway.Host}:${gateway.Port}/check`,
+            ndsConfig
+        );
+
+        // 7. 返回检查结果
+        return res.json(response.data);
+
+    } catch (error) {
+        console.error('Check NDS connection error:', error);
+        return res.status(500).json({
+            code: 500,
+            message: 'Failed to check NDS connection',
+            error: error.message
+        });
+    }
+});
+
+// 检查 NDS 是否有正在处理的任务
+router.get('/files/check-tasks/:nds_id', async (req, res) => {
+    const { nds_id } = req.params;
+    
+    if (!nds_id) {
+        return res.status(400).json({
+            code: 400,
+            message: 'nds_id is required'
+        });
+    }
+
+    const hasTasks = fileQueue.hasNDSTasks(parseInt(nds_id));
+    
+    res.json({
+        code: 200,
+        data: hasTasks  // true 表示有任务在处理，false 表示没有任务
+    });
 });
 
 module.exports = router;

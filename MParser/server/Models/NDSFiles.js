@@ -1,3 +1,5 @@
+// NDS文件清单视图，用于判断文件是否扫描过了
+
 const { DataTypes } = require('sequelize');
 const sequelize = require('../Libs/DataBasePool').sequelize;
 const NDSList = require('./NDSList');

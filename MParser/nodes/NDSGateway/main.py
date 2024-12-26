@@ -10,6 +10,8 @@ import logging
 import uvicorn
 # from NDSSocketServer import NDSSocketServer
 import asyncio
+from fastapi import Body
+from NDSClient import NDSClient
 
 # 配置日志
 logging.getLogger("uvicorn.access").disabled = True  # 禁用访问日志
@@ -73,7 +75,7 @@ async def unregister_gateway():
 async def lifespan(_: FastAPI):
     """应用生命周期管理"""
     print("等待后端启动")
-    await asyncio.sleep(5)  # 等待后端启动完成
+    await asyncio.sleep(2)  # 等待后端启动完成
     await nds_api.init_api(BACKEND_URL)
     await register_gateway()
     # await socket_server.start()  # 启动socket服务器
@@ -82,7 +84,7 @@ async def lifespan(_: FastAPI):
     await nds_api.close()
     print("Bye!")
     # await socket_server.stop()   # 停止socket服务器
-    
+
     sys.exit(0)
 
 
@@ -105,6 +107,125 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(nds_router)
+
+
+@app.post("/check")
+async def check_nds_connection(config: dict = Body(...)):
+    """检查NDS连接配置是否可用
+    
+    Args:
+        config: NDS配置信息，包含以下字段：
+            - Protocol: 协议类型 (FTP/SFTP)
+            - Address: 服务器地址
+            - Port: 端口号
+            - Account: 账号
+            - Password: 密码
+            
+    Returns:
+        Dict: 包含检查结果的字典
+            - code: 状态码 (200: 成功, 500: 失败)
+            - message: 结果描述
+            - data: 详细信息 (可选)
+    """
+    try:
+        # 1. 验证必要字段
+        required_fields = ['Protocol', 'Address', 'Port', 'Account', 'Password']
+        missing_fields = [field for field in required_fields if field not in config]
+        if missing_fields:
+            return {
+                "code": 400,
+                "message": f"Missing required fields: {', '.join(missing_fields)}"
+            }
+
+        # 2. 创建临时客户端进行测试
+        client = NDSClient(
+            protocol=config['Protocol'],
+            host=config['Address'],
+            port=int(config['Port']),
+            user=config['Account'],
+            passwd=config['Password']
+        )
+
+        # 3. 尝试连接
+        try:
+            await client.connect(1)
+            # 4. 检查连接状态
+            is_connected = await client.check_connect()
+
+            if is_connected:
+                return {
+                    "code": 200,
+                    "message": "Connection successful",
+                    "data": {
+                        "status": "connected",
+                        "protocol": config['Protocol'],
+                        "host": config['Address'],
+                        "port": config['Port']
+                    }
+                }
+            else:
+                return {
+                    "code": 500,
+                    "message": "Connection check failed",
+                    "data": {
+                        "status": "disconnected",
+                        "reason": "Failed to verify connection"
+                    }
+                }
+
+        except Exception as e:
+            return {
+                "code": 500,
+                "message": "Connection failed",
+                "data": {
+                    "status": "error",
+                    "error": str(e)
+                }
+            }
+
+        finally:
+            # 5. 确保关闭连接
+            await client.close_connect()
+
+    except Exception as e:
+        logging.error(f"Check connection error: {str(e)}")
+        return {
+            "code": 500,
+            "message": "Internal server error",
+            "error": str(e)
+        }
+
+
+@app.get("/")
+async def check_gateway():
+    """检查网关状态
+    
+    Returns:
+        Dict: 包含网关状态信息的字典
+            - code: 状态码 (200: 正常)
+            - message: 状态描述
+            - data: 详细信息
+    """
+    try:
+        return {
+            "code": 200,
+            "message": "Gateway is running",
+            "data": {
+                "status": "running",
+                "service": SERVICE_NAME,
+                "type": NODE_TYPE,
+                "host": SERVICE_HOST,
+                "port": SERVICE_PORT
+            }
+        }
+    except Exception as e:
+        logging.error(f"Gateway status check error: {str(e)}")
+        return {
+            "code": 500,
+            "message": "Gateway error",
+            "error": str(e)
+        }
+
 
 if __name__ == "__main__":
     uvicorn.run(

@@ -55,6 +55,7 @@ class NDSScanner:
         
         # 正则表达式
         self._time_pattern = re.compile(r'[_-](\d{14})')  # 时间提取模式
+        self.task_check_interval = 30  # 任务检查间隔（秒）
 
     # ========== 初始化和清理 ==========
 
@@ -107,13 +108,11 @@ class NDSScanner:
         每个文件包含path和type信息。
         """
         try:
-            print(f"扫描NDS[{nds_config['ID']}]")
             # 扫描MRO文件
             mro_files = await self._scan_files(nds_config['ID'], nds_config['MRO_Path'], nds_config['MRO_Filter'], "MRO")
             # 扫描MDT文件
             mdt_files = await self._scan_files(nds_config['ID'], nds_config['MDT_Path'], nds_config['MDT_Filter'], "MDT")
             
-            print(f"NDS FilesCount[{len(list(chain(mro_files, mdt_files)))}]")
             return list(chain(mro_files, mdt_files))
 
         except Exception as e:
@@ -136,12 +135,18 @@ class NDSScanner:
     async def parse_zip_info(self, nds_id: int, files: List[Dict]) -> List[Dict]:
         """解析ZIP文件信息
         
-        解析ZIP文件的详细信息，包括子文件列表、大小、时间等。
-        返回符合NDSFileList格式的数据列表。
+        Args:
+            nds_id: NDS ID
+            files: 文件列表，每个文件包含 path 和 type 属性
+            
+        Returns:
+            List[Dict]: 解析后的文件信息列表
         """
         try:
-            json_data = {"nds_id": nds_id, "file_paths": [file['FilePath'] for file in files]}
-            print(f"NDS[{nds_id}]parse_zip_info")
+            json_data = {
+                "nds_id": nds_id, 
+                "file_paths": [file['path'] for file in files]
+            }
             result = await self.gateway_client.post("nds/zip-info", json=json_data)
             return self._process_zip_info(nds_id, files, result)
         except Exception as e:
@@ -154,9 +159,16 @@ class NDSScanner:
         if isinstance(result, dict) and 'data' in result:
             for file_path, info in result['data'].items():
                 if info['status'] == 'success':
-                    file_data = next((f for f in files if f['FilePath'] == file_path), None)
+                    file_data = next((f for f in files if f['path'] == file_path), None)
                     if file_data:
-                        zip_infos.extend(self._create_file_records(nds_id, file_path, file_data, info['info']))
+                        zip_infos.extend(
+                            self._create_file_records(
+                                nds_id, 
+                                file_path, 
+                                {"DataType": file_data['type']},  # 只传递需要的数据
+                                info['info']
+                            )
+                        )
         return zip_infos
 
     def _create_file_records(self, nds_id: int, file_path: str, file_data: Dict, info_list: List[Dict]) -> List[Dict]:
@@ -198,15 +210,50 @@ class NDSScanner:
             return []
 
     async def diff_files(self, nds_id: int, files: List[Dict]) -> List[Dict]:
-        """获取新增文件信息列表"""
+        """获取新增文件信息列表
+        
+        Args:
+            nds_id: NDS ID
+            files: 当前扫描到的文件列表，格式: [{"path": str, "type": str}, ...]
+            
+        Returns:
+            List[Dict]: 需要新增的文件列表，保持输入格式
+        """
+        if not files:
+            return []
+
         try:
+            # 1. 去重（根据path和type）
+            files = list({(file['path'], file.get('type', '')): file for file in files}.values())
+
+            # 2. 获取NDSFiles中的文件列表
+            result = await self.backend_client.get(f"nds/files?nds_id={nds_id}")
+            if not isinstance(result, dict) or 'data' not in result or not result['data']:
+                # 如果返回结果无效或为空，直接返回所有files
+                return files
+
+            # 3. 对比文件
+            existing_files = set(result['data'])  # NDSFiles中的文件路径集合
+            current_files = {file['path'] for file in files}  # 当前扫描到的文件路径集合
+
+            # 4. 找出需要删除的文件（在NDSFiles中有，但在当前扫描中没有）
+            files_to_delete = list(existing_files - current_files)
             
-            result = await self.backend_client.get(f"nds/files?nds_id={str(nds_id)}")
-            
-            return result['new_files'] if isinstance(result, dict) and 'new_files' in result else []
+            # 5. 如果有需要删除的文件，调用删除接口
+            if files_to_delete:
+                try:
+                    await self.backend_client.post(
+                        "nds/files/remove",
+                        json={"nds_id": nds_id, "files": files_to_delete}
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to delete files: {e}")
+
+            # 6. 返回需要新增的文件（在当前扫描中有，但在NDSFiles中没有）
+            return [file for file in files if file['path'] not in existing_files]
         except Exception as e:
             logger.error(f"Diff files error: {str(e)}")
-            return []
+            return []  # 发生错误时返回空列表
 
     async def submit_file_infos(self, file_infos: List[Dict]) -> None:
         """提交文件信息到后端"""
@@ -221,7 +268,6 @@ class NDSScanner:
 
             for file_path, group_infos in file_groups.items():
                 try:
-                    
                     await self.backend_client.post(
                         "nds/files/batch",
                         json={"files": group_infos}
@@ -234,70 +280,69 @@ class NDSScanner:
         except Exception as e:
             logger.error(f"Submit file infos error: {str(e)}")
 
+    async def has_pending_tasks(self, nds_id: int) -> bool:
+        """检查NDS是否有待处理的任务"""
+        try:
+            response = await self.backend_client.get(f"nds/files/check-tasks/{nds_id}")
+            if isinstance(response, dict) and 'data' in response:
+                return response['data']  # True 表示有任务，需要等待
+            return False  # 如果响应格式不对，假设没有任务
+        except Exception as e:
+            logger.error(f"Failed to check pending tasks: {e}")
+            return False  # 出错时假设没有任务，允许继续扫描
+
     async def scan_loop(self, nds_config: Dict):
         """单个NDS的扫描循环"""
         nds_id = nds_config['ID']
         self.status[nds_id] = ScanStatus()
+        
         while self._running:
             try:
+                 # 检查是否有待处理的任务
+                while await self.has_pending_tasks(nds_id):
+                    print(f"NDS {nds_id} has pending tasks, waiting {self.task_check_interval} seconds...")
+                    await asyncio.sleep(self.task_check_interval)
                 status = self.status[nds_id]
                 status.is_scanning = True
                 start_time = datetime.now()
 
                 # 执行扫描
                 files = await self.scan_nds(nds_config)
-                if not files:  # 如果扫描失败，等待后重试
-                    await asyncio.sleep(self.min_interval)
+                if not files:
                     continue
 
                 new_files = await self.diff_files(nds_id, files)
-                if new_files is None:  # 如果比对失败，等待后重试
-                    await asyncio.sleep(self.min_interval)
-                    continue
-
+                
                 # 更新状态
                 status.last_scan_time = start_time
                 status.scan_duration = (datetime.now() - start_time).total_seconds()
                 status.new_files_count = len(new_files)
-                
-                # 处理新文件, 每次最多处理前10个文件，避免协程等待时间过长
-                handle_files = new_files
-                if handle_files:
+
+                # 如果有新文件，处理它们
+                if new_files:
                     # 处理新文件, 每次扫描2个文件，避免长时间等待
-                    batches = [handle_files[i:i + 2] for i in range(0, len(handle_files), 2)]
+                    batches = [new_files[i:i + 2] for i in range(0, len(new_files), 2)]
                     for batch in batches:
                         try:
-                            await asyncio.sleep(0.5)  # 批次间短暂延迟
                             zip_infos = await self.parse_zip_info(nds_id, batch)
                             if zip_infos:
-                                # 先记录状态，再提交文件信息
-                                last_file = batch[-1]
-                                status.last_scan_file = last_file.get('path')
-                                
-                                # 找到对应的 zip_info 记录
-                                matching_zip_infos = [info for info in zip_infos if info['FilePath'] == status.last_scan_file]
-                                if matching_zip_infos:
-                                    status.scan_file_info = matching_zip_infos[-1]
-                                
                                 # 最后提交文件信息
                                 await self.submit_file_infos(zip_infos)
-                                
-                            
                         except Exception as e:
                             logger.error(f"Failed to process batch: {str(e)}")
-                            # 清除可能不完整的状态记录
-                            status.last_scan_file = None
-                            status.scan_file_info = None
 
                 # 计算下次扫描时间
                 self.interval = max(self.min_interval, self.scan_interval - status.scan_duration)
+                
             except Exception as e:
                 self.interval = self.min_interval
                 logger.error(f"Scan error for NDS {nds_id}: {str(e)}")
+                
             finally:
+                # 更新下次扫描时间并确保延迟执行
                 self.status[nds_id].next_scan_time = datetime.now().timestamp() + self.interval
                 self.status[nds_id].is_scanning = False
-                await asyncio.sleep(self.interval)
+                await asyncio.sleep(self.interval)  # 确保每轮扫描后都有延迟
 
 
     async def handle_nds_update(self, action: str, config: Dict) -> Dict[str, str]:
@@ -353,13 +398,56 @@ class NDSScanner:
         async with self._lock:
             if self._running:
                 return
-            self._running = True
-            print("Scanner Started")
-            # 获取始配置
+            
+            # 获取初始配置
             configs = await self.fetch_nds_configs()
-            for config in configs:
-                if config['Switch'] == 1:
+            if not configs:
+                logger.warning("No NDS configs found")
+                return
+            
+            # 检查网关状态
+            try:
+                gateway_status = await self.gateway_client.get("/")  # 调用网关的根路径检查接口
+                if not isinstance(gateway_status, dict) or gateway_status.get('code') != 200:
+                    logger.error("Gateway is not ready")
+                    return
+                
+                # 检查每个NDS的连接状态
+                valid_configs = []
+                for config in configs:
+                    try:
+                        check_result = await self.gateway_client.post(
+                            "check",
+                            json={
+                                "Protocol": config['Protocol'],
+                                "Address": config['Address'],
+                                "Port": config['Port'],
+                                "Account": config['Account'],
+                                "Password": config['Password']
+                            }
+                        )
+                        
+                        if isinstance(check_result, dict) and check_result.get('code') == 200:
+                            valid_configs.append(config)
+                        else:
+                            logger.warning(f"NDS {config['ID']} connection check failed: {check_result.get('message', 'Unknown error')}")
+                            
+                    except Exception as e:
+                        logger.error(f"Failed to check NDS {config['ID']}: {str(e)}")
+                        continue
+                        
+                if not valid_configs:
+                    logger.warning("No valid NDS connections found")
+                    return
+                
+                # 只启动通过连接检查的NDS扫描任务
+                self._running = True
+                print("Scanner Started")
+                for config in valid_configs:
                     self._tasks[config['ID']] = asyncio.create_task(self.scan_loop(config))
+                
+            except Exception as e:
+                logger.error(f"Failed to check gateway status: {str(e)}")
 
     async def stop_scanning(self):
         """停止扫描器"""

@@ -6,25 +6,21 @@ const sequelize = new Sequelize(
     process.env.DB_PASSWORD,
     {
         host: process.env.DB_HOST,
+        port: process.env.DB_PORT || 3306,
         dialect: 'mysql',
         logging: false, // 禁用日志输出
         pool: { //连接池配置
-            max: 200,        // 连接池最大连接数
+            max: 500,        // 连接池最大连接数
             min: 5,         // 最小连接数
             acquire: 60000, // 获取连接的超时时间
             idle: 10000,    // 连接空闲时间
-            evict: 1000     // 清理空闲连接的频率
         },
-        timezone: '+08:00',  // 设置时区为 UTC+8
         dialectOptions: {
-            multipleStatements: true,
-            dateStrings: true,
-            typeCast: true
+            connectTimeout: 60000,  // 增加连接超时
+            // 其他 MySQL 特定选项
+            supportBigNumbers: true,
+            bigNumberStrings: true
         },
-        retry: {
-            max: 3,         // 重试次数
-            timeout: 30000  // 重试超时
-        }
     }
 );
 
@@ -39,4 +35,4 @@ async function checkConnection() {
     }
 }
 
-module.exports = { sequelize, checkConnection };
+module.exports = { sequelize, Sequelize, checkConnection };
