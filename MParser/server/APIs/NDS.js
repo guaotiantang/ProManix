@@ -1,29 +1,17 @@
+// noinspection JSUnresolvedReference
+
 const express = require('express');
 const router = express.Router();
 const NDSList = require('../Models/NDSList');
 const NodeList = require('../Models/NodeList');
 const { Op } = require('sequelize');
 const axios = require('axios');
-const crypto = require('crypto');
 const NDSFileList = require('../Models/NDSFileList');
 const NDSFiles = require('../Models/NDSFiles');
-const { sequelize } = require('../Libs/DataBasePool');
-const { Semaphore, Mutex } = require('async-mutex');
 const fileQueue = require('../Libs/QueueManager');
 
-// 定义常量
-const BATCH_DELAY = 100;  // 批处理间隔时间（毫秒）
-const BATCH_SIZE = {
-    INSERT: 200,  // 插入批次大小
-    DELETE: 200   // 删除批次大小
-};
 
-// 创建全局信号量，限制总并发数
-const globalSemaphore = new Semaphore(10);  // 限制总并发为10
-// 创建队列锁，确保请求按顺序处理
-const queueMutex = new Mutex();
-// 创建互斥锁，确保请求串行处理
-const batchMutex = new Mutex();
+
 
 // 异步通知函数
 async function notifyServices(action, config) {
@@ -35,8 +23,8 @@ async function notifyServices(action, config) {
         });
         
         // 分离网关和扫描器节点
-        const gatewayNodes = nodes.filter(node => node.NodeType === 'NDSGateway');
-        const scannerNodes = nodes.filter(node => node.NodeType === 'NDSScanner');
+        const gatewayNodes = nodes.filter(node => node.NodeType === 'NDSGateway' && node.Status === "Online");
+        const scannerNodes = nodes.filter(node => node.NodeType === 'NDSScanner' && node.Status === "Online");
         
         // 处理 config 中的 dataValues
         const configData = config.dataValues || config;

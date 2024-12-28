@@ -6,13 +6,13 @@ const NodeList = require('../Models/NodeList');
 router.post('/register', async (req, res) => {
     try {
         const { NodeType, NodeName, Host, Port } = req.body;
-        
+        const Status = "Online"
         const existing = await NodeList.findOne({
             where: { NodeType, NodeName }
         });
-        
+
         if (existing) {
-            await existing.update({ Host, Port });
+            await existing.update({ Host, Port, Status });
             return res.json({
                 message: '节点已更新',
                 code: 200,
@@ -20,13 +20,14 @@ router.post('/register', async (req, res) => {
             });
         }
 
-        const node = await NodeList.create({ 
+        const node = await NodeList.create({
             NodeType,
             NodeName,
-            Host, 
-            Port
+            Host,
+            Port,
+            Status
         });
-        
+
         res.json({
             message: '添加成功',
             code: 200,
@@ -44,21 +45,28 @@ router.post('/register', async (req, res) => {
 router.delete('/unregister', async (req, res) => {
     try {
         const { NodeType, NodeName } = req.body;
-        
-        const result = await NodeList.destroy({
+
+        const node = await NodeList.findOne({
             where: { NodeType, NodeName }
         });
 
-        if (result === 0) {
+        if (!node) {
             return res.status(404).json({
                 message: '节点不存在',
                 code: 404
             });
         }
-        
+
+        // 更新节点状态为离线
+        await node.update({
+            Status: 'Offline',
+            UpdateTime: new Date()
+        });
+
         res.json({
-            message: '删除成功',
-            code: 200
+            message: '节点已注销',
+            code: 200,
+            data: node
         });
     } catch (error) {
         res.status(500).json({
