@@ -1,3 +1,5 @@
+// noinspection JSIgnoredPromiseFromCall
+
 const { Mutex } = require('async-mutex');
 const { sequelize, Sequelize } = require('./DataBasePool');
 const NDSFileList = require('../Models/NDSFileList');
@@ -12,15 +14,16 @@ class FileOperationQueue {
         this.isProcessingDelete = false;
         this.enqueueMutex = new Mutex();  // 入队锁
         this.dequeueMutex = new Mutex();  // 出队锁
-        this.currentTransaction = null;
         this.ndsTasks = new Map();  // Map<ndsId, Set<taskId>>
-        this.cleanupMutex = new Mutex();  // 添加清理锁
         this.dataMutex = new Mutex();  // 用于数据操作的互斥
-        
+
+        console.log("NDSFileList IDQueueTask init...")
         // 启动三个处理线程
         this.startInsertProcessing();
+        console.log("NDSFileList InsertProcess Running.")
         this.startDeleteProcessing();
         this.startCleanupProcessing();  // 新增清理线程
+        console.log("NDSFileList DeleteProcess Running.")
     }
 
     // 检查 NDS 是否有正在处理的任务
@@ -66,6 +69,7 @@ class FileOperationQueue {
             }
             
             if (!isProcessing) {
+                // noinspection ES6MissingAwait
                 startProcessing.call(this);
             }
         } finally {
@@ -132,10 +136,12 @@ class FileOperationQueue {
     async processOperation(operation) {
             let transaction;
             try {
-                transaction = await sequelize.transaction({
+                // noinspection JSUnresolvedReference
+                let options = {
                     isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED,
                     timeout: 60000
-                });
+                }
+                transaction = await sequelize.transaction(options);
 
                 switch (operation.type) {
                     case 'INSERT':
@@ -283,10 +289,12 @@ class FileOperationQueue {
 
     // 新增清理处理方法
     async startCleanupProcessing() {
+        // noinspection InfiniteLoopJS
         while (true) {
             try {
                 const release = await this.dataMutex.acquire();
                 try {
+                    // noinspection JSUnresolvedReference
                     const transaction = await sequelize.transaction({
                         isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
                     });

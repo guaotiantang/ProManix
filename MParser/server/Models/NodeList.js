@@ -1,63 +1,73 @@
-const { DataTypes } = require('sequelize');
-const sequelize = require('../Libs/DataBasePool').sequelize;
+const express = require('express');
+const router = express.Router();
+const NodeList = require('../Models/NodeList');
 
-const NodeList = sequelize.define('NodeList', {
-    ID: {
-        type: DataTypes.BIGINT,
-        primaryKey: true,
-        autoIncrement: true,
-        field: 'ID'
-    },
-    NodeType: {
-        type: DataTypes.STRING(128),
-        allowNull: true,
-        field: 'NodeType'
-    },
-    NodeName: {
-        type: DataTypes.STRING(128),
-        allowNull: true,
-        field: 'NodeName'
-    },
-    Host: {
-        type: DataTypes.STRING(128),
-        allowNull: true,
-        field: 'Host'
-    },
-    Port: {
-        type: DataTypes.INTEGER,
-        allowNull: true,
-        field: 'Port'
-    },
-    CreateTime: {
-        type: DataTypes.DATE,
-        allowNull: true,
-        field: 'CreateTime'
-    }
-}, {
-    tableName: 'NodeList',
-    timestamps: false,
-    indexes: [
-        {
-            fields: ['NodeType']
-        },
-        {
-            fields: ['NodeName']
-        },
-        {
-            fields: ['Host']
-        },
-        {
-            fields: ['Port']
+// 注册节点
+router.post('/register', async (req, res) => {
+    try {
+        const { NodeType, NodeName, Host, Port } = req.body;
+        const Status = "Online"
+        const existing = await NodeList.findOne({
+            where: { NodeType, NodeName }
+        });
+        
+        if (existing) {
+
+            await existing.update({ Host, Port, Status });
+            return res.json({
+                message: '节点已更新',
+                code: 200,
+                data: existing
+            });
         }
-    ],
-    hooks: {
-        beforeValidate: (record) => {
-            record.CreateTime = new Date();
-        },
-        beforeCreate(record) {
-            record.CreateTime = new Date();
-        }
+
+        const node = await NodeList.create({ 
+            NodeType,
+            NodeName,
+            Host, 
+            Port,
+            Status
+        });
+        
+        res.json({
+            message: '添加成功',
+            code: 200,
+            data: node
+        });
+    } catch (error) {
+        res.status(500).json({
+            message: error.message,
+            code: 500
+        });
     }
 });
 
-module.exports = NodeList; 
+// 注销节点
+router.delete('/unregister', async (req, res) => {
+    try {
+        const { NodeType, NodeName } = req.body;
+        const Status = "Offline"
+        const result = await NodeList.destroy({
+            where: { NodeType, NodeName }
+        });
+
+        if (result === 0) {
+            return res.status(404).json({
+                message: '节点不存在',
+                code: 404
+            });
+        }
+        
+        res.json({
+            message: '删除成功',
+            code: 200
+        });
+    } catch (error) {
+        res.status(500).json({
+            message: error.message,
+            code: 500
+        });
+    }
+});
+
+module.exports = router; 
