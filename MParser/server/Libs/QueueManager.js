@@ -3,8 +3,8 @@
 const { Mutex } = require('async-mutex');
 const { sequelize, Sequelize } = require('./DataBasePool');
 const NDSFileList = require('../Models/NDSFileList');
-const EnbFileList = require('../Models/EnbFileList');   
-const NodeList = require('../Nodes/NodeList');
+const EnbFileTasks = require('../Models/EnbFileTasks');   
+const NodeList = require('../Models/NodeList');
 const { Op } = require('sequelize');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -22,7 +22,7 @@ class FileOperationQueue {
         
         // 配置项
         this.cleanupInterval = 120;  // 清理间隔时间（秒）
-        this.dispatchInterval = 180; // 分发任务间隔时间（秒）
+        this.dispatchInterval = 60; // 分发任务间隔时间（秒）
         
         // 任务分发状态
         this.isDispatching = false;
@@ -322,7 +322,8 @@ class FileOperationQueue {
                 try {
                     // noinspection JSUnresolvedReference
                     const transaction = await sequelize.transaction({
-                        isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
+                        isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED,
+                        timeout: 3600000
                     });
 
                     try {
@@ -368,6 +369,14 @@ class FileOperationQueue {
             
             this.isDispatching = true;
             
+            // 先检测是否存在任务
+            const checks = await EnbFileTasks.findAll({limit: 10});
+            if (!checks || checks.length === 0) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                return;
+            }
+
+
             // 1. 获取所有在线的ParserNode
             const parserNodes = await NodeList.findAll({
                 where: {
@@ -376,7 +385,10 @@ class FileOperationQueue {
                 }
             });
 
-            if (!parserNodes || parserNodes.length === 0) return;
+            if (!parserNodes || parserNodes.length === 0) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                return;
+            }
 
             // 2. 获取节点状态
             const nodeStatuses = await Promise.all(
@@ -406,7 +418,7 @@ class FileOperationQueue {
 
             // 3. 计算总可用进程数并获取任务
             const totalAvailableProcesses = availableNodes.reduce((sum, ns) => sum + ns.availableProcesses, 0);
-            const files = await EnbFileList.findAll({limit: totalAvailableProcesses});
+            const files = await EnbFileTasks.findAll({limit: totalAvailableProcesses});
 
             if (!files || files.length === 0) return;
 

@@ -242,7 +242,7 @@ class NDSScanner:
             if files_to_delete:
                 try:
                     await self.backend_client.post(
-                        "ndsfile/files/remove",
+                        "ndsfile/remove",
                         json={"nds_id": nds_id, "files": files_to_delete}
                     )
                 except Exception as e:
@@ -268,7 +268,7 @@ class NDSScanner:
             for file_path, group_infos in file_groups.items():
                 try:
                     await self.backend_client.post(
-                        "ndsfile/files/batch",
+                        "ndsfile/batch",
                         json={"files": group_infos}
                     )
                     logger.info(f"Successfully submitted file: {file_path} ({len(group_infos)} records)")
@@ -282,7 +282,7 @@ class NDSScanner:
     async def has_pending_tasks(self, nds_id: int) -> bool:
         """检查NDS是否有待处理的任务"""
         try:
-            response = await self.backend_client.get(f"ndsfile/files/check-tasks/{nds_id}")
+            response = await self.backend_client.get(f"ndsfile/check-tasks/{nds_id}")
             if isinstance(response, dict) and 'data' in response:
                 return response['data']
             return False

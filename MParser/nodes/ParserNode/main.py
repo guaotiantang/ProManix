@@ -24,7 +24,7 @@ except:
 # 2. 剩余线程按每线程2个子进程计算 
 # 3. 如果只有2线程，则最多启动2个子进程
 cpu_threads = cpu_threads - 1 if cpu_threads > 1 else 1  # 减1是为主进程预留资源
-DEFAULT_PROCESSES = min(cpu_threads * 2, 2)  # 每个可用线程分配2个子进程，但最多2个
+DEFAULT_PROCESSES = cpu_threads * 2 if cpu_threads > 1 else 1
 
 # 创建后端客户端实例
 backend_client = None
@@ -74,11 +74,11 @@ async def lifespan(_: FastAPI):
     await init_processor(DEFAULT_PROCESSES)
     # 初始化API客户端并注册节点
     await init_api()
-    await register_node()
+    # await register_node()
     yield
     try:
         await shutdown_processor()
-        await unregister_node()
+        # await unregister_node()
         await backend_client.close()
     except Exception:
         pass
