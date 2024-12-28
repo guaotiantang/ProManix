@@ -1,60 +1,48 @@
 require('dotenv').config(); // 加载 .env 文件中的配置
 const express = require('express');
 const cors = require('cors');
-const cookieParser = require('cookie-parser');
-const bodyParser = require('body-parser');
-const {sequelize, checkConnection} = require("./Libs/DataBasePool");
-const path = require('path');
 const fileUpload = require('express-fileupload');
-const cellDataRouter = require('./APIs/CellData');
-const ndsRouter = require('./APIs/NDS');
-const ndsFileRouter = require('./APIs/NDSFile');
-const nodeRouter = require('./APIs/Node');
+const { initDatabase } = require('./Libs/DataBasePool');
 
 const app = express();
-app.use(express.json({limit: '100mb'}));
-app.use(express.urlencoded({limit: '100mb', extended: true}));
-app.use(bodyParser.json({limit: '100mb'}));
-app.use(bodyParser.urlencoded({limit: '100mb', extended: true}));
 
-app.use(cookieParser()); //启用Cookies插件
-app.use(cors({
-    origin: '*',
-    credentials: true,
-}));
+// 中间件配置
+app.use(cors());
+app.use(express.json());
+app.use(fileUpload());
 
-
-
-// 添加文件上传中间件
-app.use(fileUpload({
-    createParentPath: true,
-    limits: { 
-        fileSize: 50 * 1024 * 1024  // 限制文件大小为 50MB
-    },
-}));
-
-// 初始化数据库
-sequelize.sync().then(() => {
-    checkConnection().then()
-})
-
-// 设置静态文件目录
-app.use('/assets', express.static(path.join(__dirname, 'assets')));
-
-app.get('/', (req, res) => {
-    res.status(200).send({
-        "message": {"Server": "Running"}
-    });
-});
-
-app.use('/celldata', cellDataRouter);
-app.use('/nds', ndsRouter);
-app.use('/ndsfile', ndsFileRouter);
-app.use('/node', nodeRouter);
-
+// 路由配置
+app.use('/api/nds', require('./APIs/NDS'));
+app.use('/api/ndsfile', require('./APIs/NDSFile'));
+app.use('/api/node', require('./APIs/Node'));
+app.use('/api/celldata', require('./APIs/CellData'));
 
 // 启动服务器
-const PORT = process.env.SERVER_PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`服务启动, 端口:${PORT}`);
+async function startServer() {
+    try {
+        // 初始化数据库
+        await initDatabase();
+        
+        // 启动服务器
+        const port = process.env.PORT || 9002;
+        app.listen(port, () => {
+            console.log(`Server is running on port ${port}`);
+        });
+    } catch (error) {
+        console.error('Failed to start server:', error);
+        process.exit(1);
+    }
+}
+
+// 处理未捕获的异常
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    process.exit(1);
 });
+
+process.on('unhandledRejection', (error) => {
+    console.error('Unhandled Rejection:', error);
+    process.exit(1);
+});
+
+startServer();

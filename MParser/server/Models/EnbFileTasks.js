@@ -90,6 +90,9 @@ const EnbFileTasks = sequelize.define('EnbFileTasks', {
 async function createView() {
     try {
         await sequelize.query(`
+            DROP TABLE IF EXISTS EnbFileTasks
+        `);
+        await sequelize.query(`
             CREATE OR REPLACE VIEW EnbFileTasks AS 
             SELECT DISTINCT 
                 NDSFileList.* 
@@ -103,10 +106,11 @@ async function createView() {
         `);
     } catch (error) {
         console.error('Error creating view:', error);
+        throw error;
     }
 }
 
-// 在应用启动时创建视图
-createView().catch(console.error);
-
-module.exports = EnbFileTasks; 
+module.exports = {
+    model: EnbFileTasks,
+    createView
+}; 

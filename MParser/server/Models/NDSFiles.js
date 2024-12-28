@@ -30,17 +30,20 @@ const NDSFiles = sequelize.define('NDSFiles', {
 async function createView() {
     try {
         await sequelize.query(`
-            CREATE OR REPLACE VIEW NDSFiles AS 
+            DROP TABLE IF EXISTS \`NDSFiles\`
+        `);
+        await sequelize.query(`
+            CREATE OR REPLACE VIEW \`NDSFiles\` AS 
             SELECT DISTINCT NDSID, FilePath 
             FROM NDSFileList
         `);
-        console.log('View NDSFiles created successfully');
     } catch (error) {
         console.error('Error creating view:', error);
+        throw error;
     }
 }
 
-// 在应用启动时创建视图
-createView().catch(console.error);
-
-module.exports = NDSFiles; 
+module.exports = {
+    model: NDSFiles,
+    createView
+}; 
