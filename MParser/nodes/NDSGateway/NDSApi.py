@@ -4,8 +4,6 @@ from NDSPool import NDSPool, PoolConfig
 from HttpClient import HttpClient
 from pydantic import BaseModel
 import logging
-import asyncio
-import base64
 
 logger = logging.getLogger(__name__)
 
