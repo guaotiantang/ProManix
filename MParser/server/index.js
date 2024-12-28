@@ -8,6 +8,7 @@ const path = require('path');
 const fileUpload = require('express-fileupload');
 const cellDataRouter = require('./APIs/CellData');
 const ndsRouter = require('./APIs/NDS');
+const ndsFileRouter = require('./APIs/NDSFile');
 const nodeRouter = require('./APIs/Node');
 
 const app = express();
@@ -48,6 +49,7 @@ app.get('/', (req, res) => {
 
 app.use('/celldata', cellDataRouter);
 app.use('/nds', ndsRouter);
+app.use('/ndsfile', ndsFileRouter);
 app.use('/node', nodeRouter);
 
 

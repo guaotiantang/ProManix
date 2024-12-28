@@ -1,9 +1,11 @@
-from fastapi import APIRouter, HTTPException, Body
-from typing import Dict, List, Any
+from fastapi import APIRouter, HTTPException, Body, Response, WebSocket, WebSocketDisconnect
+from typing import Dict, List, Any, Optional
 from NDSPool import NDSPool, PoolConfig
 from HttpClient import HttpClient
+from pydantic import BaseModel
 import logging
 import asyncio
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,15 @@ class NDSApi:
 
 # 创建全局实例
 nds_api = NDSApi()
+
+
+# 请求模型
+class ReadFileRequest(BaseModel):
+    """读取文件请求模型"""
+    NDSID: int
+    FilePath: str
+    HeaderOffset: Optional[int] = 0
+    CompressSize: Optional[int] = None
 
 
 @router.post("/update-pool")
@@ -187,4 +198,132 @@ async def get_zip_info(data: dict = Body(...)):
     except Exception as e:
         logger.error(f"Get ZIP info error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/read")
+async def read_file(request: ReadFileRequest) -> Response:
+    """读取NDS文件内容
+    
+    Args:
+        request: 包含以下字段的请求体
+            - NDSID: NDS服务器ID
+            - FilePath: 文件路径
+            - HeaderOffset: 文件头偏移量（可选，默认0）
+            - CompressSize: 要读取的字节数（可选，默认读取到文件末尾）
+            
+    Returns:
+        Response: 二进制响应，包含文件内容
+        响应头包含：
+        - Content-Type: application/octet-stream
+        - Content-Length: 文件大小
+        - X-File-Size: 文件大小
+    """
+    try:
+        # 检查NDS服务器是否已配置
+        if str(request.NDSID) not in nds_api.pool.get_server_ids():
+            raise HTTPException(
+                status_code=403,
+                detail=f"NDS服务器 {request.NDSID} 未配置"
+            )
+
+        # 获取NDS客户端连接
+        async with nds_api.pool.get_client(str(request.NDSID)) as client:
+            # 读取文件内容
+            content = await client.read_file_bytes(
+                file_path=request.FilePath,
+                header_offset=request.HeaderOffset or 0,
+                size=request.CompressSize
+            )
+            
+            # 直接返回二进制内容
+            return Response(
+                content=content,
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Length": str(len(content)),
+                    "X-File-Size": str(len(content))
+                }
+            )
+            
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"文件不存在: {request.FilePath}"
+        )
+    except Exception as e:
+        logger.error(f"读取文件失败: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"读取文件失败: {str(e)}"
+        )
+
+
+# 添加 WebSocket 管理器
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, client_id: str):
+        await websocket.accept()
+        self.active_connections[client_id] = websocket
+
+    def disconnect(self, client_id: str):
+        if client_id in self.active_connections:
+            del self.active_connections[client_id]
+
+    async def send_bytes(self, client_id: str, data: bytes):
+        if client_id in self.active_connections:
+            await self.active_connections[client_id].send_bytes(data)
+
+manager = ConnectionManager()
+
+@router.websocket("/ws/read/{client_id}")
+async def websocket_read(websocket: WebSocket, client_id: str):
+    """WebSocket读取文件接口"""
+    await manager.connect(websocket, client_id)
+    try:
+        while True:
+            # 等待接收读取文件的请求
+            data = await websocket.receive_json()
+            
+            try:
+                # 检查NDS服务器是否已配置
+                if str(data['NDSID']) not in nds_api.pool.get_server_ids():
+                    await websocket.send_json({
+                        "code": 403,
+                        "message": f"NDS服务器 {data['NDSID']} 未配置"
+                    })
+                    continue
+
+                # 获取NDS客户端连接并读取文件
+                try:
+                    async with nds_api.pool.get_client(str(data['NDSID'])) as client:
+                        content = await client.read_file_bytes(
+                            file_path=data['FilePath'],
+                            header_offset=data.get('HeaderOffset', 0),
+                            size=data.get('CompressSize')
+                        )
+                        
+                        # 发送二进制数据
+                        await websocket.send_bytes(content)
+                        
+                except FileNotFoundError:
+                    await websocket.send_json({
+                        "code": 404,
+                        "message": f"文件不存在: {data['FilePath']}"
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "code": 500,
+                        "message": str(e)
+                    })
+                    
+            except Exception as e:
+                await websocket.send_json({
+                    "code": 500,
+                    "message": str(e)
+                })
+                
+    except WebSocketDisconnect:
+        manager.disconnect(client_id)
 

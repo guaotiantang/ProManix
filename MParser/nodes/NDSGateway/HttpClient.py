@@ -1,68 +1,58 @@
-import aiohttp
+import httpx
 import logging
 from typing import Optional, Dict, Any, Union
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class HttpConfig:
     """HTTP客户端配置"""
     timeout: int = 3600  # 默认超时时间1小时
 
-
 class HttpClient:
     """HTTP客户端封装"""
-
     def __init__(self, base_url: str, config: Optional[HttpConfig] = None):
         self.base_url = base_url.rstrip('/')
         self.config = config or HttpConfig()
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._timeout = aiohttp.ClientTimeout(total=self.config.timeout)
+        self._client: Optional[httpx.AsyncClient] = None
 
     async def __aenter__(self):
-        await self.ensure_session()
+        await self.ensure_client()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
-    async def ensure_session(self):
-        """确保session已创建"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=self._timeout)
+    async def ensure_client(self):
+        """确保client已创建"""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=self.config.timeout,
+                verify=False  # 如果需要禁用SSL验证
+            )
 
     async def close(self):
-        """关闭session"""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        """关闭client"""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
 
-    async def request(
-            self,
-            method: str,
-            endpoint: str,
-            **kwargs
-    ) -> Union[Dict[str, Any], bytes, str]:
+    async def request(self, method: str, endpoint: str, **kwargs) -> Union[Dict[str, Any], bytes, str]:
         """发送HTTP请求"""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        await self.ensure_session()
-
-        try:
-            async with self._session.request(method, url, **kwargs) as response:
-                response.raise_for_status()
-
-                content_type = response.headers.get('Content-Type', '')
-                if 'application/json' in content_type:
-                    return await response.json()
-                elif 'application/octet-stream' in content_type:
-                    return await response.read()
-                else:
-                    return await response.text()
-        except Exception as e:
-            logger.error(f"Request failed: {str(e)}")
-            raise
+        await self.ensure_client()
+        
+        response = await self._client.request(method, url, **kwargs)
+        response.raise_for_status()
+        
+        content_type = response.headers.get('content-type', '')
+        if 'application/json' in content_type:
+            return response.json()
+        elif 'application/octet-stream' in content_type:
+            return response.read()
+        else:
+            return response.text
 
     async def get(self, endpoint: str, **kwargs) -> Union[Dict[str, Any], bytes, str]:
         """发送GET请求"""
@@ -74,4 +64,4 @@ class HttpClient:
 
     async def delete(self, endpoint: str, **kwargs) -> Union[Dict[str, Any], bytes, str]:
         """发送DELETE请求"""
-        return await self.request('DELETE', endpoint, **kwargs)
+        return await self.request('DELETE', endpoint, **kwargs) 

@@ -56,7 +56,8 @@ async def register_node():
                 "NodeType": NODE_TYPE,
                 "NodeName": SERVICE_NAME,
                 "Host": SERVICE_HOST,
-                "Port": SERVICE_PORT
+                "Port": SERVICE_PORT,
+                "Status": "Online"
             }
         )
     except Exception as e:
@@ -71,7 +72,8 @@ async def unregister_node():
             "node/unregister",
             json={
                 "NodeType": NODE_TYPE,
-                "NodeName": SERVICE_NAME
+                "NodeName": SERVICE_NAME,
+                "Status": "Offline"
             }
         )
     except Exception as e:

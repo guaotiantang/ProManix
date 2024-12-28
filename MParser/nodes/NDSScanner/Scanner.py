@@ -227,9 +227,8 @@ class NDSScanner:
             files = list({(file['path'], file.get('type', '')): file for file in files}.values())
 
             # 2. 获取NDSFiles中的文件列表
-            result = await self.backend_client.get(f"nds/files?nds_id={nds_id}")
+            result = await self.backend_client.get(f"ndsfile/files?nds_id={nds_id}")
             if not isinstance(result, dict) or 'data' not in result or not result['data']:
-                # 如果返回结果无效或为空，直接返回所有files
                 return files
 
             # 3. 对比文件
@@ -243,7 +242,7 @@ class NDSScanner:
             if files_to_delete:
                 try:
                     await self.backend_client.post(
-                        "nds/files/remove",
+                        "ndsfile/files/remove",
                         json={"nds_id": nds_id, "files": files_to_delete}
                     )
                 except Exception as e:
@@ -253,7 +252,7 @@ class NDSScanner:
             return [file for file in files if file['path'] not in existing_files]
         except Exception as e:
             logger.error(f"Diff files error: {str(e)}")
-            return []  # 发生错误时返回空列表
+            return []
 
     async def submit_file_infos(self, file_infos: List[Dict]) -> None:
         """提交文件信息到后端"""
@@ -269,7 +268,7 @@ class NDSScanner:
             for file_path, group_infos in file_groups.items():
                 try:
                     await self.backend_client.post(
-                        "nds/files/batch",
+                        "ndsfile/files/batch",
                         json={"files": group_infos}
                     )
                     logger.info(f"Successfully submitted file: {file_path} ({len(group_infos)} records)")
@@ -283,13 +282,13 @@ class NDSScanner:
     async def has_pending_tasks(self, nds_id: int) -> bool:
         """检查NDS是否有待处理的任务"""
         try:
-            response = await self.backend_client.get(f"nds/files/check-tasks/{nds_id}")
+            response = await self.backend_client.get(f"ndsfile/files/check-tasks/{nds_id}")
             if isinstance(response, dict) and 'data' in response:
-                return response['data']  # True 表示有任务，需要等待
-            return False  # 如果响应格式不对，假设没有任务
+                return response['data']
+            return False
         except Exception as e:
             logger.error(f"Failed to check pending tasks: {e}")
-            return False  # 出错时假设没有任务，允许继续扫描
+            return False
 
     async def scan_loop(self, nds_config: Dict):
         """单个NDS的扫描循环"""

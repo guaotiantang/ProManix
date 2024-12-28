@@ -3,8 +3,11 @@
 const { Mutex } = require('async-mutex');
 const { sequelize, Sequelize } = require('./DataBasePool');
 const NDSFileList = require('../Models/NDSFileList');
+const EnbFileList = require('../Models/EnbFileList');   
+const NodeList = require('../Nodes/NodeList');
 const { Op } = require('sequelize');
 const crypto = require('crypto');
+const axios = require('axios');
 
 class FileOperationQueue {
     constructor() {
@@ -16,6 +19,14 @@ class FileOperationQueue {
         this.dequeueMutex = new Mutex();  // 出队锁
         this.ndsTasks = new Map();  // Map<ndsId, Set<taskId>>
         this.dataMutex = new Mutex();  // 用于数据操作的互斥
+        
+        // 配置项
+        this.cleanupInterval = 120;  // 清理间隔时间（秒）
+        this.dispatchInterval = 180; // 分发任务间隔时间（秒）
+        
+        // 任务分发状态
+        this.isDispatching = false;
+        this.dispatchMutex = new Mutex();  // 分发任务锁
 
         console.log("NDSFileList IDQueueTask init...")
         // 启动三个处理线程
@@ -24,6 +35,9 @@ class FileOperationQueue {
         this.startDeleteProcessing();
         this.startCleanupProcessing();  // 新增清理线程
         console.log("NDSFileList DeleteProcess Running.")
+        
+        // 启动任务分发循环
+        this.startDispatchLoop();
     }
 
     // 检查 NDS 是否有正在处理的任务
@@ -155,6 +169,9 @@ class FileOperationQueue {
                 }
 
                 await transaction.commit();
+                // 触发dispatchParseTask
+                this.dispatchParseTask();
+                
             } catch (error) {
                 if (transaction) {
                     try {
@@ -276,10 +293,19 @@ class FileOperationQueue {
                 { Parsed: -1 },
                 {
                     where: {
-                        [Op.or]: batch.map(file => ({
-                            NDSID: file.NDSID,
-                            FilePath: file.FilePath
-                        }))
+                        [Op.and]: [
+                            {
+                                [Op.or]: batch.map(file => ({
+                                    NDSID: file.NDSID,
+                                    FilePath: file.FilePath
+                                }))
+                            },
+                            {
+                                Parsed: {
+                                    [Op.ne]: 1 // 未正在解释的由ParserNode进行更新
+                                }
+                            }
+                        ]
                     },
                     transaction
                 }
@@ -317,7 +343,142 @@ class FileOperationQueue {
                 console.error('Error in cleanup processing:', error);
             }
 
-            await new Promise(resolve => setTimeout(resolve, 3 * 60 * 1000));
+            // 使用配置的清理间隔时间（秒转毫秒）
+            await new Promise(resolve => setTimeout(resolve, this.cleanupInterval * 1000));
+        }
+    }
+
+    // 启动定时分发循环
+    async startDispatchLoop() {
+        while (true) {
+            await this.dispatchParseTask();
+            await new Promise(resolve => setTimeout(resolve, this.dispatchInterval * 1000));
+        }
+    }
+
+    // 分发Parse任务
+    async dispatchParseTask() {
+        const release = await this.dispatchMutex.acquire();
+        
+        try {
+            if (this.isDispatching) {
+                release();
+                return;
+            }
+            
+            this.isDispatching = true;
+            
+            // 1. 获取所有在线的ParserNode
+            const parserNodes = await NodeList.findAll({
+                where: {
+                    NodeType: 'ParserNode',
+                    Status: 'Online'
+                }
+            });
+
+            if (!parserNodes || parserNodes.length === 0) return;
+
+            // 2. 获取节点状态
+            const nodeStatuses = await Promise.all(
+                parserNodes.map(async node => {
+                    try {
+                        const response = await axios.get(`http://${node.Host}:${node.Port}/status`);
+                        if (response.data.code === 200 && response.data.data) {
+                            return { 
+                                node, 
+                                status: response.data.data,
+                                availableProcesses: response.data.data.available_processes
+                            };
+                        }
+                    } catch (error) {
+                        // 节点通信失败，更新状态为离线
+                        await NodeList.update(
+                            { Status: 'Offline' },
+                            { where: { ID: node.ID } }
+                        );
+                        return null;
+                    }
+                })
+            );
+
+            const availableNodes = nodeStatuses.filter(ns => ns !== null && ns.availableProcesses > 0);
+            if (availableNodes.length === 0) return;
+
+            // 3. 计算总可用进程数并获取任务
+            const totalAvailableProcesses = availableNodes.reduce((sum, ns) => sum + ns.availableProcesses, 0);
+            const files = await EnbFileList.findAll({limit: totalAvailableProcesses});
+
+            if (!files || files.length === 0) return;
+
+            // 4. 分发任务到各节点
+            let fileIndex = 0;
+            for (const nodeStatus of availableNodes) {
+                if (fileIndex >= files.length) break;  // 如果没有更多任务了，直接退出
+
+                const { node, availableProcesses } = nodeStatus;
+                const nodeTasks = [];
+                
+                // 收集该节点可处理的任务
+                for (let i = 0; i < availableProcesses && fileIndex < files.length; i++) {
+                    nodeTasks.push(files[fileIndex++]);
+                }
+
+                if (nodeTasks.length === 0) continue;
+
+                try {
+                    // 批量更新文件状态
+                    await NDSFileList.update(
+                        { Parsed: 1, UpdateTime: new Date() },
+                        {
+                            where: {
+                                FileHash: {
+                                    [Op.in]: nodeTasks.map(task => task.FileHash)
+                                }
+                            }
+                        }
+                    );
+
+                    // 批量发送任务
+                    await axios.post(`http://${node.Host}:${node.Port}/task`, {
+                        tasks: nodeTasks.map(file => ({
+                            FileHash: file.FileHash,
+                            NDSID: file.NDSID,
+                            FilePath: file.FilePath,
+                            FileTime: file.FileTime.toISOString(), // 确保日期格式统一
+                            DataType: file.DataType,
+                            eNodeBID: parseInt(file.eNodeBID), // 确保数字类型
+                            SubFileName: file.SubFileName,
+                            HeaderOffset: parseInt(file.HeaderOffset),
+                            CompressSize: parseInt(file.CompressSize),
+                            FileSize: file.FileSize ? parseInt(file.FileSize) : null,
+                            FlagBits: file.FlagBits ? parseInt(file.FlagBits) : null,
+                            CompressType: file.CompressType ? parseInt(file.CompressType) : null
+                        }))
+                    });
+                } catch (error) {
+                    // 发送失败，将节点标记为离线并恢复文件状态
+                    await NodeList.update(
+                        { Status: 'Offline' },
+                        { where: { ID: node.ID } }
+                    );
+                    
+                    await NDSFileList.update(
+                        { Parsed: 0, UpdateTime: new Date() },
+                        {
+                            where: {
+                                FileHash: {
+                                    [Op.in]: nodeTasks.map(task => task.FileHash)
+                                }
+                            }
+                        }
+                    );
+                }
+            }
+        } catch (error) {
+            return;
+        } finally {
+            this.isDispatching = false;
+            release();
         }
     }
 }

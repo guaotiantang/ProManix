@@ -47,7 +47,8 @@ async def register_gateway():
                 "NodeType": NODE_TYPE,
                 "NodeName": SERVICE_NAME,
                 "Host": SERVICE_HOST,
-                "Port": SERVICE_PORT
+                "Port": SERVICE_PORT,
+                "Status": "Online"
             }
         )
     except Exception as e:
@@ -64,7 +65,8 @@ async def unregister_gateway():
             "node/unregister",
             json={
                 "NodeType": NODE_TYPE,
-                "NodeName": SERVICE_NAME
+                "NodeName": SERVICE_NAME,
+                "Status": "Offline"
             }
         )
     except Exception as e:
