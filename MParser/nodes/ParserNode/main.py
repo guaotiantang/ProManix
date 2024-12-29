@@ -3,12 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from HttpClient import HttpClient
 from config import BACKEND_URL, SERVICE_NAME, SERVICE_HOST, SERVICE_PORT, NODE_TYPE
-from api import router
-from task_manager import init_processor, shutdown_processor
+from api import router, init_processor, shutdown_processor
+import uvicorn
 import multiprocessing
 import psutil
-import uvicorn
-
 
 # 获取CPU核心数并计算可用的子进程数
 try:
@@ -23,16 +21,12 @@ except:
 # 1. 为主进程预留一个线程资源
 # 2. 剩余线程按每线程2个子进程计算 
 # 3. 如果只有2线程，则最多启动2个子进程
-cpu_threads = cpu_threads - 1 if cpu_threads > 1 else 1  # 减1是为主进程预留资源
-DEFAULT_PROCESSES = cpu_threads * 2 if cpu_threads > 1 else 1
+cpu_threads = cpu_threads * 2 - 1 if cpu_threads > 1 else 1 # 减1是为主进程预留资源
+
 
 # 创建后端客户端实例
-backend_client = None
+backend_client = HttpClient(BACKEND_URL)
 
-async def init_api():
-    """初始化API"""
-    global backend_client
-    backend_client = HttpClient(BACKEND_URL)
 
 async def register_node():
     """注册节点"""
@@ -71,14 +65,15 @@ async def unregister_node():
 async def lifespan(_: FastAPI):
     """应用生命周期管理"""
     # 初始化任务处理器
-    await init_processor(DEFAULT_PROCESSES)
-    # 初始化API客户端并注册节点
-    await init_api()
-    # await register_node()
+    await init_processor(cpu_threads)
+    # 注册节点
+    await register_node()
+    # 触发分发流程
+    await backend_client.get("ndsfile/dispatch")
     yield
     try:
         await shutdown_processor()
-        # await unregister_node()
+        await unregister_node()
         await backend_client.close()
     except Exception:
         pass
@@ -106,6 +101,5 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=SERVICE_PORT,
-        reload=True
+        port=SERVICE_PORT
     ) 

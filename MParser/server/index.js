@@ -8,14 +8,18 @@ const app = express();
 
 // 中间件配置
 app.use(cors());
-app.use(express.json());
-app.use(fileUpload());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
+app.use(fileUpload({
+    limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+    abortOnLimit: true
+}));
 
 // 路由配置
-app.use('/api/nds', require('./APIs/NDS'));
-app.use('/api/ndsfile', require('./APIs/NDSFile'));
-app.use('/api/node', require('./APIs/Node'));
-app.use('/api/celldata', require('./APIs/CellData'));
+app.use('/nds', require('./APIs/NDS'));
+app.use('/ndsfile', require('./APIs/NDSFile'));
+app.use('/node', require('./APIs/Node'));
+app.use('/celldata', require('./APIs/CellData'));
 
 // 启动服务器
 async function startServer() {

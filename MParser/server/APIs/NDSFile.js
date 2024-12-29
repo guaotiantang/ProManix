@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const NDSFileList = require('../Models/NDSFileList');
-const NDSFiles = require('../Models/NDSFiles');
+const { model: NDSFiles } = require('../Models/NDSFiles');
 const fileQueue = require('../Libs/QueueManager');
 
 // 清理NDS相关文件记录
@@ -113,36 +113,42 @@ router.post('/remove', async (req, res) => {
     });
 });
 
-// 获取NDS文件清单
+// 获取NDS的文件列表
 router.get('/files', async (req, res) => {
     try {
         const { nds_id } = req.query;
-        let query = {
-            attributes: ['FilePath'],
-            order: [['FilePath', 'ASC']]
-        };
-
-        if (nds_id) {
-            query.where = {
-                NDSID: nds_id
-            };
+        
+        if (!nds_id) {
+            return res.status(400).json({
+                code: 400,
+                message: 'Missing nds_id parameter'
+            });
         }
 
-        const files = await NDSFiles.findAll(query);
-        const filePaths = files.map(file => file.FilePath);
+        const files = await NDSFiles.findAll({
+            where: { NDSID: nds_id },
+            attributes: ['FilePath'],
+            raw: true
+        });
 
         res.json({
             code: 200,
-            data: filePaths
+            data: files.map(f => f.FilePath)
         });
     } catch (error) {
-        console.error('Error fetching NDS files:', error);
+        console.error('获取文件列表失败:', error);
         res.status(500).json({
             code: 500,
-            error: 'Failed to fetch NDS files'
+            message: error.message
         });
     }
 });
+
+router.get('/dispatch', async (req, res) => {
+    fileQueue.dispatchParseTask()
+    res.status(200).json({code: 200, message: "success"})
+
+})
 
 // 检查 NDS 是否有正在处理的任务
 router.get('/check-tasks/:nds_id', async (req, res) => {
@@ -218,5 +224,7 @@ router.post('/update-parsed', async (req, res) => {
         });
     }
 });
+
+
 
 module.exports = router; 

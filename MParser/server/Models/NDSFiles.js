@@ -9,11 +9,7 @@ const NDSFiles = sequelize.define('NDSFiles', {
     NDSID: {
         type: DataTypes.INTEGER,
         allowNull: false,
-        field: 'NDSID',
-        references: {
-            model: NDSList,
-            key: 'ID'
-        }
+        field: 'NDSID'
     },
     FilePath: {
         type: DataTypes.STRING(250),
@@ -22,27 +18,26 @@ const NDSFiles = sequelize.define('NDSFiles', {
     }
 }, {
     tableName: 'NDSFiles',
-    timestamps: false,
-    schema: null,
+    timestamps: false
 });
 
 // 创建视图
 async function createView() {
     try {
         await sequelize.query(`
-            DROP TABLE IF EXISTS \`NDSFiles\`
-        `);
-        await sequelize.query(`
-            CREATE OR REPLACE VIEW \`NDSFiles\` AS 
+            CREATE OR REPLACE VIEW NDSFiles AS 
             SELECT DISTINCT NDSID, FilePath 
-            FROM NDSFileList
+            FROM NDSFileList 
+            WHERE Parsed >= 0
         `);
+        console.log('NDSFiles view created successfully');
     } catch (error) {
-        console.error('Error creating view:', error);
+        console.error('Error creating NDSFiles view:', error);
         throw error;
     }
 }
 
+// 导出模型和创建视图的函数
 module.exports = {
     model: NDSFiles,
     createView

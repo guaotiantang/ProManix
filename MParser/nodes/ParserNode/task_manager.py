@@ -1,4 +1,4 @@
-from aiomultiprocess import Process
+from aiomultiprocess import Process, Pool
 import asyncio
 from typing import List, Dict, Any, Optional
 import signal
@@ -8,32 +8,107 @@ from config import BACKEND_URL, NDS_GATEWAY_URL
 import websockets
 import uuid
 import json
-from multiprocessing import Queue, Value, Lock
+from multiprocessing import Manager, Value, Lock
 import ctypes
 
 logger = logging.getLogger(__name__)
 
 # 全局共享状态
-task_queue = Queue()  # 任务队列
-active_count = Value(ctypes.c_int, 0)  # 活动进程计数
-status_lock = Lock()  # 进程间共享的锁
+active_count = Value(ctypes.c_int, 0)
+status_lock = Lock()
 
-async def worker_process():
-    """工作进程主函数"""
+class TaskProcessor:
+    def __init__(self, process_count: int):
+        self.process_count = process_count
+        self.processes: List[Process] = []
+        self._running = False
+        
+
+    async def start(self):
+        """启动所有工作进程"""
+        if self._running:
+            return
+
+        self._running = True
+        
+        # 创建进程池
+        self.pool = Pool(processes=self.process_count)
+        # 初始化Manager和共享队列
+        self.manager = Manager()
+        self.task_queue = self.manager.Queue()
+        # 启动工作进程
+        for i in range(self.process_count):
+            process = Process(target=worker_task, args=(self.task_queue, i))
+            process.start()
+            self.processes.append(process)
+            print(f"Started worker process {i}")
+        
+        print(f"Started {self.process_count} worker processes")
+
+    async def stop(self):
+        """停止所有工作进程"""
+        if not self._running:
+            return
+
+        self._running = False
+        
+        # 发送结束信号
+        for _ in range(self.process_count):
+            self.task_queue.put(None)
+            
+        # 等待所有任务完成
+        if self.pool:
+            await self.pool.join()
+            await self.pool.close()
+        
+        # 关闭Manager
+        self.manager.shutdown()
+        
+        # 重置计数器
+        with status_lock:
+            active_count.value = 0
+            
+        logger.info("All worker processes stopped")
+
+    def get_available_processes(self) -> int:
+        """获取空闲进程数量"""
+        with status_lock:
+            return self.process_count - active_count.value
+
+    def get_process_status(self) -> Dict[str, Any]:
+        """获取详细的进程状态"""
+        with status_lock:
+            return {
+                "total_processes": self.process_count,
+                "active_processes": active_count.value,
+                "available_processes": self.process_count - active_count.value,
+                "queue_size": self.task_queue.qsize()
+            }
+
+    def put_task(self, task: Dict[str, Any]):
+        """添加任务到队列"""
+        self.task_queue.put(task)
+
+async def worker_task(queue, worker_id):
+    """工作进程任务"""
     # 忽略中断信号
+    print(f"Worker {worker_id} process starting...")
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     
     # 创建HTTP客户端
     backend_client = HttpClient(BACKEND_URL)
-    print("SubProcess Start")
     try:
         while True:
             try:
                 # 从队列获取任务（阻塞等待）
-                print("Wait Queue...")
-                task_data = task_queue.get()
-                print("Parse Queue...")
+                print(f"Worker {worker_id} waiting for task...")
+                task_data = queue.get()
+                if task_data is None:  # 接收到结束信号，退出
+                    print(f"Worker {worker_id} exiting...")
+                    break
+                    
+                print(f"Worker {worker_id} processing task...")
                 # 增加活动计数
                 with status_lock:
                     active_count.value += 1
@@ -47,7 +122,7 @@ async def worker_process():
                         active_count.value -= 1
                 
             except Exception as e:
-                logger.error(f"Error in worker process: {e}")
+                logger.error(f"Error in worker {worker_id}: {e}")
                 continue
                 
     except Exception as e:
@@ -99,76 +174,3 @@ async def process_task(task_data: Dict[str, Any], backend_client: HttpClient):
             json={"files": [{"FileHash": task_data["FileHash"], "Parsed": parsed_status}]}
         )
 
-class TaskProcessor:
-    def __init__(self, process_count: int):
-        self.process_count = process_count
-        self.processes: List[Process] = []
-        self._running = False
-        self._lock = asyncio.Lock()
-        self.ws_connections: Dict[str, websockets.WebSocketClientProtocol] = {}
-
-    async def start(self):
-        """启动所有工作进程"""
-        if self._running:
-            return
-
-        self._running = True
-        
-        # 启动工作进程
-        i = 0
-        for _ in range(self.process_count):
-            i += 1
-            print(f"Run Process[{i}]/{self.process_count}")
-            process = Process(target=worker_process)  # worker_process 是协程函数
-            process.start()
-            self.processes.append(process)
-
-        logger.info(f"Started {self.process_count} worker processes")
-
-    async def stop(self):
-        """停止所有工作进程"""
-        if not self._running:
-            return
-
-        self._running = False
-        
-        # 停止所有进程
-        for process in self.processes:
-            process.terminate()
-            await process.join()
-
-        self.processes.clear()
-        
-        # 重置计数器
-        with status_lock:
-            active_count.value = 0
-            
-        logger.info("All worker processes stopped")
-
-    def get_available_processes(self) -> int:
-        """获取空闲进程数量"""
-        with status_lock:
-            return self.process_count - active_count.value
-
-    def get_process_status(self) -> Dict[str, Any]:
-        """获取详细的进程状态"""
-        with status_lock:
-            return {
-                "total_processes": self.process_count,
-                "active_processes": active_count.value,
-                "available_processes": self.process_count - active_count.value
-            }
-
-# 创建任务处理器实例
-processor: TaskProcessor = None
-
-async def init_processor(process_count: int):
-    """初始化任务处理器"""
-    global processor
-    processor = TaskProcessor(process_count)
-    await processor.start()
-
-async def shutdown_processor():
-    """关闭任务处理器"""
-    if processor:
-        await processor.stop()

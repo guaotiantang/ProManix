@@ -3,7 +3,7 @@
 const { Mutex } = require('async-mutex');
 const { sequelize, Sequelize } = require('./DataBasePool');
 const NDSFileList = require('../Models/NDSFileList');
-const EnbFileTasks = require('../Models/EnbFileTasks');   
+const {model: EnbFileTasks} = require('../Models/EnbFileTasks');   
 const NodeList = require('../Models/NodeList');
 const { Op } = require('sequelize');
 const crypto = require('crypto');
@@ -20,7 +20,7 @@ class FileOperationQueue {
         this.ndsTasks = new Map();  // Map<ndsId, Set<taskId>>
         this.dataMutex = new Mutex();  // 用于数据操作的互斥
         
-        // 配置项
+        // 配置项 
         this.cleanupInterval = 120;  // 清理间隔时间（秒）
         this.dispatchInterval = 60; // 分发任务间隔时间（秒）
         
@@ -313,41 +313,89 @@ class FileOperationQueue {
         }
     }
 
-    // 新增清理处理方法
     async startCleanupProcessing() {
-        // noinspection InfiniteLoopJS
         while (true) {
             try {
                 const release = await this.dataMutex.acquire();
                 try {
-                    // noinspection JSUnresolvedReference
-                    const transaction = await sequelize.transaction({
-                        isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED,
-                        timeout: 3600000
+                    // 先尝试一次性删除
+                    let transaction = await sequelize.transaction({
+                        isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
                     });
 
                     try {
-                        await sequelize.query(`
-                            DELETE FROM NDSFileList 
-                            WHERE Parsed = -1
-                        `, { transaction });
-
+                        await NDSFileList.destroy({
+                            where: { Parsed: -1 },
+                            transaction,
+                            // 使用 Sequelize 的查询超时
+                            lock: true,
+                            timeout: 3600000 // 1小时超时
+                        });
+                        
                         await transaction.commit();
                     } catch (error) {
                         await transaction.rollback();
-                        console.error('Error during cleanup:', error);
+                        // 超时后切换到分批删除模式
+                        const BATCH_SIZE = 100; // 每批删除100条记录
+                        
+                        while (true) {
+                            try {
+                                // 查找要删除的记录
+                                const records = await NDSFileList.findAll({
+                                    where: { Parsed: -1 },
+                                    attributes: ['FileHash'],
+                                    limit: BATCH_SIZE,
+                                    lock: false // 不锁表
+                                });
+
+                                if (records.length === 0) {
+                                    break; // 没有更多记录需要删除
+                                }
+
+                                // 获取 FileHash 列表
+                                const fileHashes = records.map(record => record.FileHash);
+
+                                // 执行删除操作
+                                transaction = await sequelize.transaction({
+                                    isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
+                                });
+
+                                try {
+                                    await NDSFileList.destroy({
+                                        where: {
+                                            FileHash: {
+                                                [Op.in]: fileHashes
+                                            }
+                                        },
+                                        transaction,
+                                        timeout: 30000 // 30秒超时
+                                    });
+
+                                    await transaction.commit();
+                                } catch (batchError) {
+                                    await transaction.rollback();
+                                    break;
+                                }
+
+                                // 每批处理后短暂暂停
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                            } catch (findError) {
+                                break;
+                            }
+                        }
                     }
                 } finally {
                     release();
                 }
             } catch (error) {
-                console.error('Error in cleanup processing:', error);
+                console.warn('Cleanup cycle error:', error.message);
             }
 
-            // 使用配置的清理间隔时间（秒转毫秒）
+            // 使用配置的清理间隔时间
             await new Promise(resolve => setTimeout(resolve, this.cleanupInterval * 1000));
         }
     }
+
 
     // 启动定时分发循环
     async startDispatchLoop() {
@@ -360,13 +408,14 @@ class FileOperationQueue {
     // 分发Parse任务
     async dispatchParseTask() {
         const release = await this.dispatchMutex.acquire();
-        
         try {
             if (this.isDispatching) {
+                console.log("dispatchParseTask is running")
                 release();
                 return;
             }
             
+            console.log("In dispatchParseTask")
             this.isDispatching = true;
             
             // 先检测是否存在任务
@@ -375,7 +424,7 @@ class FileOperationQueue {
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 return;
             }
-
+            
 
             // 1. 获取所有在线的ParserNode
             const parserNodes = await NodeList.findAll({
@@ -384,17 +433,17 @@ class FileOperationQueue {
                     Status: 'Online'
                 }
             });
-
+            console.log(parserNodes);
             if (!parserNodes || parserNodes.length === 0) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 return;
             }
-
             // 2. 获取节点状态
             const nodeStatuses = await Promise.all(
                 parserNodes.map(async node => {
                     try {
                         const response = await axios.get(`http://${node.Host}:${node.Port}/status`);
+                        console.log("response", response.data);
                         if (response.data.code === 200 && response.data.data) {
                             return { 
                                 node, 
@@ -412,14 +461,14 @@ class FileOperationQueue {
                     }
                 })
             );
-
             const availableNodes = nodeStatuses.filter(ns => ns !== null && ns.availableProcesses > 0);
+           
             if (availableNodes.length === 0) return;
 
             // 3. 计算总可用进程数并获取任务
             const totalAvailableProcesses = availableNodes.reduce((sum, ns) => sum + ns.availableProcesses, 0);
             const files = await EnbFileTasks.findAll({limit: totalAvailableProcesses});
-
+            console.log(totalAvailableProcesses);
             if (!files || files.length === 0) return;
 
             // 4. 分发任务到各节点
@@ -449,23 +498,24 @@ class FileOperationQueue {
                             }
                         }
                     );
-
+                    const tasks = nodeTasks.map(file => ({
+                        FileHash: file.FileHash,
+                        NDSID: parseInt(file.NDSID),
+                        FilePath: file.FilePath,
+                        FileTime: file.FileTime ? file.FileTime.toISOString() : new Date().toISOString(),
+                        DataType: file.DataType || '',
+                        eNodeBID: parseInt(file.eNodeBID) || 0,
+                        SubFileName: file.SubFileName || '',
+                        HeaderOffset: parseInt(file.HeaderOffset) || 0,
+                        CompressSize: parseInt(file.CompressSize) || 0,
+                        FileSize: file.FileSize ? parseInt(file.FileSize) : null,
+                        FlagBits: file.FlagBits ? parseInt(file.FlagBits) : null,
+                        CompressType: file.CompressType ? parseInt(file.CompressType) : null
+                    }));
+                    console.log("Sent task", tasks);
                     // 批量发送任务
                     await axios.post(`http://${node.Host}:${node.Port}/task`, {
-                        tasks: nodeTasks.map(file => ({
-                            FileHash: file.FileHash,
-                            NDSID: file.NDSID,
-                            FilePath: file.FilePath,
-                            FileTime: file.FileTime.toISOString(), // 确保日期格式统一
-                            DataType: file.DataType,
-                            eNodeBID: parseInt(file.eNodeBID), // 确保数字类型
-                            SubFileName: file.SubFileName,
-                            HeaderOffset: parseInt(file.HeaderOffset),
-                            CompressSize: parseInt(file.CompressSize),
-                            FileSize: file.FileSize ? parseInt(file.FileSize) : null,
-                            FlagBits: file.FlagBits ? parseInt(file.FlagBits) : null,
-                            CompressType: file.CompressType ? parseInt(file.CompressType) : null
-                        }))
+                        tasks: tasks
                     });
                 } catch (error) {
                     // 发送失败，将节点标记为离线并恢复文件状态
@@ -486,8 +536,6 @@ class FileOperationQueue {
                     );
                 }
             }
-        } catch (error) {
-            return;
         } finally {
             this.isDispatching = false;
             release();
