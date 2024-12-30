@@ -159,6 +159,7 @@ class NDSClient:
                 return False
 
             if self.protocol == "FTP":
+                print("ftp")
                 try:
                     await self.client.change_directory("/")
                     return True
@@ -169,6 +170,7 @@ class NDSClient:
                     return False
             else:  # SFTP
                 if not self.__sftp:
+                    print("nosftp")
                     return False
                 # 定义检查函数列表
                 checks = [
@@ -301,19 +303,16 @@ class NDSClient:
             }
             return self.stream_info
         except Exception as e:
-            logger.error(f"Get stat Error: {str(e)}")
             return None
 
     async def open(self, file_path):
-        async with self._lock:
-            self.stream_info = await self.stat(file_path)
-            if not self.stream_info:
-                logger.error(f"File not found: {file_path}")
-                raise NDSFileNotFoundError(f"File not found: {file_path}")
-            if self.protocol == "SFTP":
-                self.__stream = await self.client.open(file_path, 'rb')
-            self.stream_path = file_path
-            logger.debug(f"Successfully opened file: {file_path}")
+
+        self.stream_info = await self.stat(file_path)
+        if not self.stream_info:
+            raise NDSFileNotFoundError(f"File not found: {file_path}")
+        if self.protocol == "SFTP":
+            self.__stream = await self.client.open(file_path, 'rb')
+        self.stream_path = file_path
 
     async def seek(self, offset: int = 0, whence: int = 0) -> None:
         """设置文件指针位置
@@ -361,11 +360,6 @@ class NDSClient:
                         ('1xx', '200', '250'),  # 接受更多有效的FTP响应码
                         offset=self.__stream_offset
                     )
-                    # stream = await self.client.get_stream(
-                    #     "RETR " + self.stream_path,
-                    #     "1xx",
-                    #     offset=self.__stream_offset
-                    # )
                     tmp_io = BytesIO()
                     size = size if size and self.__stream_offset + size <= self.stream_info['size'] else \
                         self.stream_info['size'] - self.__stream_offset
@@ -528,7 +522,8 @@ class NDSClient:
             await self.open(file_path)
             yield self
         finally:
-            await self.close_connect()
+            if not await self.check_connect():
+                await self.connect()
 
     async def read_file_bytes(self, file_path: str, header_offset: int = 0, size: Optional[int] = None) -> bytes:
         """读取文件内容
@@ -545,8 +540,8 @@ class NDSClient:
             NDSError: 文件读取错误
         """
         try:
-            async with self.open_file(file_path) as f:
-                await f.seek(header_offset)
-                return await f.read(size)
+            await self.open(file_path)
+            await self.seek(header_offset)
+            return await self.read(size)
         except Exception as e:
             raise NDSError(f"Failed to read file {file_path}: {str(e)}", level=1)

@@ -244,11 +244,13 @@ async def read_file(request: ReadFileRequest) -> Response:
             )
             
     except FileNotFoundError:
+        
         raise HTTPException(
             status_code=404,
             detail=f"文件不存在: {request.FilePath}"
         )
     except Exception as e:
+        print("Read Error")
         logger.error(f"读取文件失败: {str(e)}")
         raise HTTPException(
             status_code=500,
@@ -278,50 +280,68 @@ manager = ConnectionManager()
 @router.websocket("/ws/read/{client_id}")
 async def websocket_read(websocket: WebSocket, client_id: str):
     """WebSocket读取文件接口"""
+    CHUNK_SIZE = 512 * 1024  # 512KB chunks
     await manager.connect(websocket, client_id)
     try:
-        while True:
-            # 等待接收读取文件的请求
-            data = await websocket.receive_json()
-            
-            try:
-                # 检查NDS服务器是否已配置
-                if str(data['NDSID']) not in nds_api.pool.get_server_ids():
-                    await websocket.send_json({
-                        "code": 403,
-                        "message": f"NDS服务器 {data['NDSID']} 未配置"
-                    })
-                    continue
+        # 等待接收读取文件的请求
+        data = await websocket.receive_json()
+        # 检查NDS服务器是否已配置
+        if str(data['NDSID']) not in nds_api.pool.get_server_ids():
+            await websocket.send_json({
+                "code": 403,
+                "message": f"NDS服务器 {data['NDSID']} 未配置"
+            })
+            return
 
-                # 获取NDS客户端连接并读取文件
-                try:
-                    async with nds_api.pool.get_client(str(data['NDSID'])) as client:
-                        content = await client.read_file_bytes(
-                            file_path=data['FilePath'],
-                            header_offset=data.get('HeaderOffset', 0),
-                            size=data.get('CompressSize')
-                        )
-                        
-                        # 发送二进制数据
-                        await websocket.send_bytes(content)
-                        
-                except FileNotFoundError:
-                    await websocket.send_json({
-                        "code": 404,
-                        "message": f"文件不存在: {data['FilePath']}"
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "code": 500,
-                        "message": str(e)
-                    })
-                    
-            except Exception as e:
-                await websocket.send_json({
-                    "code": 500,
-                    "message": str(e)
-                })
+        # 获取NDS客户端连接并读取文件
+        try:
+            content = None
+            async with nds_api.pool.get_client(str(data['NDSID'])) as client:
+                content = await client.read_file_bytes(
+                    file_path=data['FilePath'],
+                    header_offset=data.get('HeaderOffset', 0),
+                    size=data.get('CompressSize')
+                )
+                if not await client.check_connect():
+                    print("No Connected")
+            
+            if content is None:
+                raise Exception("Data is null")
+            
+            # 使用分块传输发送数据
+            for i in range(0, len(content), CHUNK_SIZE):
+                chunk = content[i:i + CHUNK_SIZE]
+                await websocket.send_bytes(chunk)
+            
+            # 发送结束标记
+            await websocket.send_json({"end_of_file": True})
+                
+        except FileNotFoundError:
+            await websocket.send_json({
+                "code": 404,
+                "message": f"文件不存在: {data['FilePath']}"
+            })
+        except Exception as e:
+            await websocket.send_json({
+                "code": 500,
+                "message": str(e)
+            })
                 
     except WebSocketDisconnect:
-        manager.disconnect(client_id)
+        pass
+    except Exception as e:
+        # 其他错误，尝试发送错误消息
+        try:
+            await websocket.send_json({
+                "code": 500,
+                "message": f"处理请求时发生错误: {str(e)}"
+            })
+        except:
+            pass
+    finally:
+        # 断开WebSocket连接
+        try:
+            manager.disconnect(client_id)
+        except Exception:
+            pass
 
