@@ -295,10 +295,10 @@ class FileOperationQueue {
                     where: {
                         [Op.and]: [
                             {
-                        [Op.or]: batch.map(file => ({
-                            NDSID: file.NDSID,
-                            FilePath: file.FilePath
-                        }))
+                                [Op.or]: batch.map(file => ({
+                                    NDSID: file.NDSID,
+                                    FilePath: file.FilePath
+                                }))
                             },
                             {
                                 Parsed: {
@@ -331,7 +331,7 @@ class FileOperationQueue {
                             lock: true,
                             timeout: 3600000 // 1小时超时
                         });
-
+                        
                         await transaction.commit();
                     } catch (error) {
                         await transaction.rollback();
