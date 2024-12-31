@@ -114,7 +114,7 @@ app.include_router(nds_router)
 @app.post("/check")
 async def check_nds_connection(config: dict = Body(...)):
     """检查NDS连接配置是否可用
-    
+
     Args:
         config: NDS配置信息，包含以下字段：
             - Protocol: 协议类型 (FTP/SFTP)
@@ -122,7 +122,7 @@ async def check_nds_connection(config: dict = Body(...)):
             - Port: 端口号
             - Account: 账号
             - Password: 密码
-            
+
     Returns:
         Dict: 包含检查结果的字典
             - code: 状态码 (200: 成功, 500: 失败)
@@ -201,7 +201,7 @@ async def check_nds_connection(config: dict = Body(...)):
 @app.get("/")
 async def check_gateway():
     """检查网关状态
-    
+
     Returns:
         Dict: 包含网关状态信息的字典
             - code: 状态码 (200: 正常)

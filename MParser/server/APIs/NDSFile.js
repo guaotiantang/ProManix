@@ -3,7 +3,8 @@ const router = express.Router();
 const NDSFileList = require('../Models/NDSFileList');
 const { model: NDSFiles } = require('../Models/NDSFiles');
 const fileQueue = require('../Libs/QueueManager');
-
+const EnbTaskList = require('../Models/EnbTaskList')
+const { Sequelize } = require('../Libs/DataBasePool'); 
 // 清理NDS相关文件记录
 router.delete('/clean/:nds_id', async (req, res) => {
     try {
@@ -113,7 +114,8 @@ router.post('/remove', async (req, res) => {
     });
 });
 
-// 获取NDS的文件列表
+
+// 获取NDS的文件列表和任务时间映射
 router.get('/files', async (req, res) => {
     try {
         const { nds_id } = req.query;
@@ -125,15 +127,34 @@ router.get('/files', async (req, res) => {
             });
         }
 
-        const files = await NDSFiles.findAll({
-            where: { NDSID: nds_id },
-            attributes: ['FilePath'],
-            raw: true
-        });
-
+        // 并行获取文件列表和任务时间
+        const [files, times] = await Promise.all([
+            NDSFiles.findAll({
+                where: { NDSID: nds_id },
+                attributes: ['FilePath'],
+                raw: true
+            }),
+            EnbTaskList.findAll({
+                attributes: [
+                    [Sequelize.fn('DATE_FORMAT', Sequelize.col('StartTime'), '%Y-%m-%d %H:%i:%s'), 'StartTime'],
+                    [Sequelize.fn('DATE_FORMAT', Sequelize.col('EndTime'), '%Y-%m-%d %H:%i:%s'), 'EndTime']
+                ],
+                group: ['StartTime', 'EndTime'],
+                raw: true
+            })
+        ]);
+        // 直接使用数据库中的时间
+        const formattedTimes = times.map(task => ({
+            StartTime: task.StartTime,
+            EndTime: task.EndTime
+        })) || [];
+        
         res.json({
             code: 200,
-            data: files.map(f => f.FilePath)
+            data: {
+                files: files.map(f => f.FilePath),
+                times: formattedTimes
+            }
         });
     } catch (error) {
         console.error('获取文件列表失败:', error);
@@ -144,6 +165,7 @@ router.get('/files', async (req, res) => {
     }
 });
 
+// 分发任务接口
 router.get('/dispatch', async (req, res) => {
     fileQueue.dispatchParseTask()
     res.status(200).json({code: 200, message: "success"})
