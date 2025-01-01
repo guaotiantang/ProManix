@@ -2,9 +2,14 @@ require('dotenv').config(); // 加载 .env 文件中的配置
 const express = require('express');
 const cors = require('cors');
 const fileUpload = require('express-fileupload');
+const http = require('http');  // 添加 http 模块
+const { SocketServer, LogLevel } = require('./Libs/SocketServer');  // 导入 SocketServer
 const { initDatabase } = require('./Libs/DataBasePool');
-
+const APIMaps = require('./APIs/APIMaps');
 const app = express();
+
+// 创建 HTTP 服务器
+const server = http.createServer(app);
 
 // 中间件配置
 app.use(cors());
@@ -15,9 +20,23 @@ app.use(fileUpload({
     abortOnLimit: true
 }));
 
+// 创建 SocketServer 实例
+const socketServer = new SocketServer(server, {
+    logLevel: LogLevel.INFO,
+    corsOrigin: "*",
+    pingTimeout: 10000,
+    pingInterval: 5000
+});
+
+socketServer.registerBatch(APIMaps);
+
+// 使用 SocketServer 的路由
+app.use('/api', socketServer.getRouter());
+
+
 // 路由配置
 app.use('/nds', require('./APIs/NDS'));
-app.use('/ndsfile', require('./APIs/NDSFile'));
+app.use('/ndsfile', require('./APIs/NDSFile').router);
 app.use('/node', require('./APIs/Node'));
 app.use('/celldata', require('./APIs/CellData'));
 
@@ -29,8 +48,9 @@ async function startServer() {
         
         // 启动服务器
         const port = process.env.PORT || 9002;
-        app.listen(port, () => {
-            console.log(`Server is running on port ${port}`);
+        server.listen(port, () => {  // 使用 server.listen 替代 app.listen
+            console.log(`HTTP Server is running on port ${port}`);
+            console.log(`Socket Server is running on port ${port}`);
         });
     } catch (error) {
         console.error('Failed to start server:', error);

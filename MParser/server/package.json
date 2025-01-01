@@ -10,6 +10,7 @@
     "nodemon": "^3.1.6"
   },
   "dependencies": {
+    "async": "^3.2.6",
     "async-mutex": "^0.5.0",
     "axios": "^1.7.9",
     "body-parser": "^1.20.3",
@@ -20,6 +21,7 @@
     "express-fileupload": "^1.5.1",
     "mysql2": "^3.11.5",
     "sequelize": "^6.37.5",
+    "socket.io": "^4.8.1",
     "xlsx": "^0.18.5"
   }
 }

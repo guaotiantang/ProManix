@@ -1,13 +1,245 @@
-// noinspection JSIgnoredPromiseFromCall
+// noinspection JSIgnoredPromiseFromCall,JSUnresolvedReference,InfiniteLoopJS
 
 const { Mutex } = require('async-mutex');
+const { queue } = require('async');
 const { sequelize, Sequelize } = require('./DataBasePool');
 const NDSFileList = require('../Models/NDSFileList');
-const {model: EnbFileTasks} = require('../Models/EnbFileTasks');   
-const NodeList = require('../Models/NodeList');
+const EnbFileTasks = require('../Models/EnbFileTasks');
 const { Op } = require('sequelize');
 const crypto = require('crypto');
-const axios = require('axios');
+
+class AsyncFileOperationQueue {
+    constructor() {
+        // 创建插入和删除队列
+        this.insertQueue = queue(async (operation, callback) => {
+            try {
+                let transaction = await sequelize.transaction({
+                    isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
+                });
+
+                try {
+                    await this.handleInsert(operation.data, transaction);
+                    await transaction.commit();
+                    await taskQueue.checkAndReplenish();
+                    callback(null);
+                } catch (error) {
+                    await transaction.rollback();
+                    callback(error);
+                }
+            } catch (error) {
+                callback(error);
+            }
+        }, 1);
+
+        this.deleteQueue = queue(async (operation, callback) => {
+            try {
+                let transaction = await sequelize.transaction({
+                    isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
+                });
+
+                try {
+                    await this.handleDelete(operation.data, transaction);
+                    await transaction.commit();
+                    callback(null);
+                } catch (error) {
+                    await transaction.rollback();
+                    callback(error);
+                }
+            } catch (error) {
+                callback(error);
+            }
+        }, 1);
+
+        this.ndsTasks = new Map();  // Map<ndsId, Set<taskId>>
+        this.dataMutex = new Mutex();  // 用于数据操作的互斥
+
+        // 启动清理进程
+        this.startCleanupProcessing();
+        console.log("AsyncFileOperationQueue initialized");
+    }
+
+    // 检查 NDS 是否有正在处理的任务
+    hasNDSTasks(ndsId) {
+        return this.ndsTasks.has(ndsId) && this.ndsTasks.get(ndsId).size > 0;
+    }
+
+    // 记录任务ID到对应的NDS
+    _recordTaskIds(operation) {
+        const ndsIds = new Set(operation.data.files.map(file => file.NDSID));
+        for (const ndsId of ndsIds) {
+            if (!this.ndsTasks.has(ndsId)) {
+                this.ndsTasks.set(ndsId, new Set());
+            }
+            this.ndsTasks.get(ndsId).add(operation.taskId);
+        }
+    }
+
+    // 清理任务ID
+    _cleanupTaskIds(operation) {
+        const ndsIds = new Set(operation.data.files.map(file => file.NDSID));
+        for (const ndsId of ndsIds) {
+            if (this.ndsTasks.has(ndsId)) {
+                this.ndsTasks.get(ndsId).delete(operation.taskId);
+                if (this.ndsTasks.get(ndsId).size === 0) {
+                    this.ndsTasks.delete(ndsId);
+                }
+            }
+        }
+    }
+
+    // 入队操作
+    async enqueue(operation) {
+        return new Promise((resolve, reject) => {
+            const queue = operation.type === 'INSERT' ? this.insertQueue : this.deleteQueue;
+            
+            if (operation.type === 'INSERT') {
+                this._recordTaskIds(operation);
+            }
+
+            queue.push(operation, (err) => {
+                if (operation.type === 'INSERT') {
+                    this._cleanupTaskIds(operation);
+                }
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    }
+
+    // 处理插入操作
+    async handleInsert(data, transaction) {
+        const { files } = data;
+        try {
+            // 创建临时表
+            await sequelize.query(`
+                CREATE TEMPORARY TABLE IF NOT EXISTS temp_nds_files (
+                    FileHash VARCHAR(32) NOT NULL,
+                    NDSID INT NOT NULL,
+                    FilePath VARCHAR(250) NOT NULL,
+                    FileTime DATETIME,
+                    DataType VARCHAR(50),
+                    eNodeBID VARCHAR(20),
+                    SubFileName VARCHAR(250),
+                    HeaderOffset BIGINT,
+                    CompressSize BIGINT,
+                    FileSize BIGINT,
+                    FlagBits INT,
+                    CompressType INT,
+                    Parsed TINYINT DEFAULT 0,
+                    CreateTime DATETIME,
+                    UpdateTime DATETIME,
+                    INDEX (FileHash)
+                )
+            `, { transaction });
+
+            // 分批插入
+            const batchSize = 100;
+            const now = new Date();
+
+            for (let i = 0; i < files.length; i += batchSize) {
+                const batch = files.slice(i, i + batchSize);
+                await sequelize.query(`
+                    INSERT INTO temp_nds_files (
+                        FileHash, NDSID, FilePath, FileTime, DataType, 
+                        eNodeBID, SubFileName, HeaderOffset, CompressSize, 
+                        FileSize, FlagBits, CompressType, Parsed, 
+                        CreateTime, UpdateTime
+                    ) VALUES ${
+                        batch.map(file => `(
+                            ${sequelize.escape(
+                                crypto.createHash('md5')
+                                    .update(`${file.NDSID}_${file.FilePath}_${file.DataType}_${file.SubFileName}`)
+                                    .digest('hex')
+                            )},
+                            ${file.NDSID},
+                            ${sequelize.escape(file.FilePath)},
+                            ${sequelize.escape(file.FileTime)},
+                            ${sequelize.escape(file.DataType)},
+                            ${sequelize.escape(file.eNodeBID)},
+                            ${sequelize.escape(file.SubFileName)},
+                            ${file.HeaderOffset},
+                            ${file.CompressSize},
+                            ${file.FileSize},
+                            ${file.FlagBits},
+                            ${file.CompressType},
+                            ${file.Parsed || 0},
+                            ${sequelize.escape(now)},
+                            ${sequelize.escape(now)}
+                        )`).join(',')
+                    }
+                `, { transaction });
+            }
+
+            // 从临时表插入到正式表
+            await sequelize.query(`
+                INSERT IGNORE INTO NDSFileList (
+                    FileHash, NDSID, FilePath, FileTime, DataType,
+                    eNodeBID, SubFileName, HeaderOffset, CompressSize,
+                    FileSize, FlagBits, CompressType, Parsed,
+                    CreateTime, UpdateTime
+                )
+                SELECT * FROM temp_nds_files
+            `, { transaction });
+
+            // 删除临时表
+            await sequelize.query('DROP TEMPORARY TABLE IF EXISTS temp_nds_files', { transaction });
+        } catch (error) {
+            await sequelize.query('DROP TEMPORARY TABLE IF EXISTS temp_nds_files', { transaction });
+            throw error;
+        }
+    }
+
+    // 处理删除操作
+    async handleDelete(data, transaction) {
+        const { files } = data;
+        const batchSize = 100;
+
+        for (let i = 0; i < files.length; i += batchSize) {
+            const batch = files.slice(i, i + batchSize);
+            await NDSFileList.update(
+                { Parsed: -1 },
+                {
+                    where: {
+                        [Op.and]: [
+                            {
+                                [Op.or]: batch.map(file => ({
+                                    NDSID: file.NDSID,
+                                    FilePath: file.FilePath
+                                }))
+                            },
+                            {
+                                Parsed: {
+                                    [Op.ne]: 1
+                                }
+                            }
+                        ]
+                    },
+                    transaction
+                }
+            );
+        }
+    }
+
+    // 清理进程
+    async startCleanupProcessing() {
+        while (true) {
+            try {
+                const release = await this.dataMutex.acquire();
+                try {
+                    await NDSFileList.destroy({
+                        where: { Parsed: -1 }
+                    });
+                } finally {
+                    release();
+                }
+            } catch (error) {
+                console.warn('Cleanup cycle error:', error.message);
+            }
+            await new Promise(resolve => setTimeout(resolve, 120000)); // 每2分钟清理一次
+        }
+    }
+}
+
 
 class FileOperationQueue {
     constructor() {
@@ -19,25 +251,17 @@ class FileOperationQueue {
         this.dequeueMutex = new Mutex();  // 出队锁
         this.ndsTasks = new Map();  // Map<ndsId, Set<taskId>>
         this.dataMutex = new Mutex();  // 用于数据操作的互斥
-        
-        // 配置项 
+
+        // 配置项
         this.cleanupInterval = 120;  // 清理间隔时间（秒）
-        this.dispatchInterval = 60; // 分发任务间隔时间（秒）
-        
-        // 任务分发状态
-        this.isDispatching = false;
-        this.dispatchMutex = new Mutex();  // 分发任务锁
 
         console.log("NDSFileList IDQueueTask init...")
-        // 启动三个处理线程
+        // 启动处理线程
         this.startInsertProcessing();
         console.log("NDSFileList InsertProcess Running.")
         this.startDeleteProcessing();
         this.startCleanupProcessing();  // 新增清理线程
         console.log("NDSFileList DeleteProcess Running.")
-        
-        // 启动任务分发循环
-        this.startDispatchLoop();
     }
 
     // 检查 NDS 是否有正在处理的任务
@@ -81,7 +305,7 @@ class FileOperationQueue {
             if (isInsert) {
                 this._recordTaskIds(operation);
             }
-            
+
             if (!isProcessing) {
                 // noinspection ES6MissingAwait
                 startProcessing.call(this);
@@ -157,29 +381,28 @@ class FileOperationQueue {
                 }
                 transaction = await sequelize.transaction(options);
 
-                switch (operation.type) {
-                    case 'INSERT':
-                        await this.handleInsert(operation.data, transaction);
-                        break;
-                    case 'DELETE':
-                        await this.handleDelete(operation.data, transaction);
-                        break;
-                    default:
+            switch (operation.type) {
+                case 'INSERT':
+                    await this.handleInsert(operation.data, transaction);
+                    // 在 INSERT 操作完成后检查任务队列
+                    await taskQueue.checkAndReplenish();
+                    break;
+                case 'DELETE':
+                    await this.handleDelete(operation.data, transaction);
+                    break;
+                default:
                     console.error('Unknown operation type:', operation.type);
                 }
 
-                await transaction.commit();
-                // 触发dispatchParseTask
-                this.dispatchParseTask();
-                
-            } catch (error) {
-                if (transaction) {
-                    try {
-                        await transaction.rollback();
-                    } catch (rollbackError) {
-                        console.error('Rollback failed:', rollbackError);
-                    }
+            await transaction.commit();
+        } catch (error) {
+            if (transaction) {
+                try {
+                    await transaction.rollback();
+                } catch (rollbackError) {
+                    console.error('Rollback failed:', rollbackError);
                 }
+            }
             console.error('Operation failed:', error);
         } finally {
             if (operation.type === 'INSERT') {
@@ -190,7 +413,7 @@ class FileOperationQueue {
 
     async handleInsert(data, transaction) {
         const { files } = data;
-        
+
         try {
             // 1. 创建临时表
             await sequelize.query(`
@@ -217,7 +440,7 @@ class FileOperationQueue {
             // 2. 分批插入到临时表
             const batchSize = 100;
             const now = new Date();
-            
+
             for (let i = 0; i < files.length; i += batchSize) {
                 const batch = files.slice(i, i + batchSize);
                 await sequelize.query(`
@@ -286,7 +509,7 @@ class FileOperationQueue {
     async handleDelete(data, transaction) {
         const { files } = data;
         const batchSize = 100;
-        
+
         for (let i = 0; i < files.length; i += batchSize) {
             const batch = files.slice(i, i + batchSize);
             await NDSFileList.update(
@@ -331,7 +554,7 @@ class FileOperationQueue {
                             lock: true,
                             timeout: 3600000 // 1小时超时
                         });
-                        
+
                         await transaction.commit();
                     } catch (error) {
                         await transaction.rollback();
@@ -347,8 +570,8 @@ class FileOperationQueue {
                                     lock: false // 不锁表
                                 });
 
-                                if (records.length === 0) break; 
-                                
+                                if (records.length === 0) break;
+
                                 // 获取 FileHash 列表
                                 const fileHashes = records.map(record => record.FileHash);
 
@@ -391,145 +614,70 @@ class FileOperationQueue {
             await new Promise(resolve => setTimeout(resolve, this.cleanupInterval * 1000));
         }
     }
+}
 
 
-    // 启动定时分发循环
-    async startDispatchLoop() {
-        while (true) {
-            await this.dispatchParseTask();
-            await new Promise(resolve => setTimeout(resolve, this.dispatchInterval * 1000));
+class TaskQueue {
+    constructor() {
+        // 创建异步队列，并发数设为1确保顺序处理
+        this.taskQueue = queue(async (task, callback) => {
+            try {
+                callback(null, task);
+            } catch (error) {
+                callback(error);
+            }
+        }, 1);
+
+        this.replenishMutex = new Mutex();
+        this.minQueueSize = 50;
+    }
+
+    // 补充队列
+    async replenishQueue() {
+        const release = await this.replenishMutex.acquire();
+        try {
+            const tasks = await EnbFileTasks.findAll({
+                limit: 1000
+            });
+            
+            // 将任务添加到异步队列
+            for (const task of tasks) {
+                this.taskQueue.push(task);
+            }
+        } finally {
+            release();
         }
     }
 
-    // 分发Parse任务
-    async dispatchParseTask() {
-        const release = await this.dispatchMutex.acquire();
-        try {
-            if (this.isDispatching) {
-                release();
-                return;
-            }
-            this.isDispatching = true;
-            
-            // 先检测是否存在任务
-            const checks = await EnbFileTasks.findAll({limit: 10});
-            if (!checks || checks.length === 0) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                return;
-            }
+    // 获取任务
+    async getTask() {
+        // 如果队列长度小于阈值，补充任务
+        if (this.taskQueue.length() < this.minQueueSize) {
+            await this.replenishQueue();
+        }
 
-            // 1. 获取所有在线的ParserNode
-            const parserNodes = await NodeList.findAll({ where: { NodeType: 'ParserNode', Status: 'Online' }});
-            if (!parserNodes || parserNodes.length === 0) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                return;
-            }
+        // 返回一个Promise，当有任务时会被解决
+        return new Promise((resolve, reject) => {
+            this.taskQueue.push((err, task) => {
+                if (err) reject(err);
+                else resolve(task);
+            });
+        });
+    }
 
-            // 2. 获取节点状态
-            const nodeStatuses = await Promise.all(
-                parserNodes.map(async node => {
-                    try {
-                        const response = await axios.get(`http://${node.Host}:${node.Port}/status`);
-                        if (response.data.code === 200 && response.data.data) {
-                            return { 
-                                node, 
-                                status: response.data.data,
-                                availableProcesses: response.data.data.idle_process_count
-                            };
-                        }
-                    } catch (error) {
-                        // 节点通信失败，更新状态为离线
-                        await NodeList.update(
-                            { Status: 'Offline' },
-                            { where: { ID: node.ID } }
-                        );
-                        return null;
-                    }
-                   
-                })
-            );
-            // 过滤掉不可用的节点
-            const availableNodes = nodeStatuses.filter(ns => ns !== null && ns.availableProcesses > 0);
-            if (availableNodes.length === 0) return;
-
-            // 3. 获取未处理的任务
-            const totalAvailableProcesses = availableNodes.reduce((sum, ns) => sum + ns.availableProcesses, 0);
-            const files = await EnbFileTasks.findAll({ limit: totalAvailableProcesses });
-            if (!files || files.length === 0) return;
-
-            // 4. 分发任务到各节点
-            let fileIndex = 0;
-            for (const nodeStatus of availableNodes) {
-                if (fileIndex >= files.length) break;
-                const { node, availableProcesses } = nodeStatus;
-                const nodeTasks = [];
-                
-                // 收集该节点可处理的任务
-                for (let i = 0; i < availableProcesses && fileIndex < files.length; i++) {
-                    nodeTasks.push(files[fileIndex++]);
-                }
-                if (nodeTasks.length === 0) continue;
-
-                try {
-                    // 开启事务
-                    const transaction = await sequelize.transaction();
-                    // 批量更新文件状态
-                    await NDSFileList.update(
-                        { Parsed: 1, UpdateTime: new Date() },
-                        {
-                            where: {
-                                FileHash: {
-                                    [Op.in]: nodeTasks.map(task => task.FileHash)
-                                },
-                                Parsed: 0  // 确保只更新未处理的任务
-                            },
-                            transaction
-                        }
-                    );
-                    // 发送任务到节点
-                    await axios.post(`http://${node.Host}:${node.Port}/task`, 
-                        { tasks: nodeTasks.map(file => ({
-                            FileHash: file.FileHash,
-                            NDSID: parseInt(file.NDSID),
-                            FilePath: file.FilePath,
-                            FileTime: file.FileTime?.toISOString() || new Date().toISOString(),
-                            SubFileName: file.SubFileName || '',
-                            HeaderOffset: parseInt(file.HeaderOffset) || 0,
-                            CompressSize: parseInt(file.CompressSize) || 0,
-                            eNodeBID: file.eNodeBID?.toString() || '',
-                            DataType: file.DataType || '',
-                            FileSize: file.FileSize ? parseInt(file.FileSize) : null,
-                            FlagBits: file.FlagBits ? parseInt(file.FlagBits) : null,
-                            CompressType: file.CompressType ? parseInt(file.CompressType) : null
-                        }))}
-                    );
-                    await transaction.commit();
-                } catch (error) {
-                    await transaction.rollback();
-                    await NodeList.update(
-                        { Status: 'Offline' },
-                        { where: { ID: node.ID } }
-                    );
-                    
-                    // 恢复文件状态
-                    await NDSFileList.update(
-                        { Parsed: 0, UpdateTime: new Date() },
-                        { where: {
-                            FileHash: {
-                                [Op.in]: nodeTasks.map(task => task.FileHash)
-                            },
-                            Parsed: 1
-                        }}
-                    );
-                }
-            }
-        } finally {
-            this.isDispatching = false;
-            release();
+    // 检查并补充队列
+    async checkAndReplenish() {
+        if (this.taskQueue.length() < this.minQueueSize) {
+            await this.replenishQueue();
         }
     }
 }
 
+
+
+
+
 // 创建单例
 const fileQueue = new FileOperationQueue();
-module.exports = fileQueue; 
+const taskQueue = new TaskQueue();
+module.exports = { fileQueue, taskQueue };

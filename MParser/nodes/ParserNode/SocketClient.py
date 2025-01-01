@@ -7,12 +7,14 @@ from pydantic import BaseModel
 from urllib.parse import urlparse
 import asyncio
 
+
 # 定义日志级别
 class LogLevel:
-    ERROR = logging.ERROR   # 只输出错误
-    WARN = logging.WARN     # 输出警告和错误
-    INFO = logging.INFO     # 输出一般信息、警告和错误
-    DEBUG = logging.DEBUG   # 输出所有信息
+    ERROR = logging.ERROR  # 只输出错误
+    WARN = logging.WARN  # 输出警告和错误
+    INFO = logging.INFO  # 输出一般信息、警告和错误
+    DEBUG = logging.DEBUG  # 输出所有信息
+
 
 class ApiRequest(BaseModel):
     api: str  # 调用的API名称
@@ -53,7 +55,7 @@ class SocketClient:
         # 设置日志级别
         self.log_level = options.get("log_level", LogLevel.INFO)
         logging.getLogger().setLevel(self.log_level)
-        
+
         # 创建异步socketio客户端
         self.sio = socketio.AsyncClient(
             reconnection=options.get("reconnection", True),
@@ -63,7 +65,7 @@ class SocketClient:
             logger=options.get("logger", False),
             engineio_logger=options.get("engineio_logger", False)
         )
-        
+
         self.socket_url = socket_url
         self.http_url = http_url
         self.callback_url = callback_url
@@ -126,6 +128,7 @@ class SocketClient:
 
     def setup_handlers(self):
         """设置事件处理函数"""
+
         @self.sio.event
         async def connect():
             self._connected = True
@@ -158,8 +161,8 @@ class SocketClient:
         if self._http_session is None or self._http_session.closed:
             self._http_session = aiohttp.ClientSession()
 
-    async def call_api(self, api: str, data: Dict[str, Any], callback_type: str = "socket", 
-                      callback_func: str = None, request_id: str = None) -> Dict:
+    async def call_api(self, api: str, data: Dict[str, Any], callback_type: str = "socket",
+                       callback_func: str = None, request_id: str = None) -> Dict:
         """
         调用API并处理响应
         :param api: API名称
@@ -186,9 +189,9 @@ class SocketClient:
             if callback_type == "http" and self.http_url and self.callback_url:
                 await self._ensure_http_session()
                 async with self._http_session.post(
-                    self.http_url,
-                    json=request.model_dump(),
-                    headers={'Content-Type': 'application/json'}
+                        self.http_url,
+                        json=request.model_dump(),
+                        headers={'Content-Type': 'application/json'}
                 ) as response:
                     return await response.json()
 
@@ -210,9 +213,9 @@ class SocketClient:
                     request.callback_type = "http"
                     await self._ensure_http_session()
                     async with self._http_session.post(
-                        self.http_url,
-                        json=request.model_dump(),
-                        headers={'Content-Type': 'application/json'}
+                            self.http_url,
+                            json=request.model_dump(),
+                            headers={'Content-Type': 'application/json'}
                     ) as response:
                         return await response.json()
                 else:

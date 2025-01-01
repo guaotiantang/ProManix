@@ -12,20 +12,23 @@ from aiomultiprocess import Process
 from clickhouse_driver import Client as CKClient
 
 from HttpClient import HttpClient
+from SocketClient import SocketClient
 from Parser import mro, mdt
 from config import BACKEND_URL, NDS_GATEWAY_URL, CK_HOST, CK_PORT, CK_USER, CK_PASSWD, CK_DB
 
 
 class TaskProcess:
-    def __init__(self, process_count: int = 2):
+    def __init__(self, process_count: int = 2, socket_client: SocketClient = None):
         self.process_count = process_count
-        self.queue = Manager().Queue()
+        self.task_queue = Manager().Queue()
+        self.idle_queue = Manager().Queue()
         self.status = Manager().dict()
         self.status_lock = Manager().Lock()
         self.is_running = False
         self.processes: List[Process] = []
         self._shutdown_event = Manager().Event()
         self.ck_config = {}
+        self.socket_client = socket_client
 
     async def set_process_count(self, new_count: int):
         """动态设置进程数量"""
@@ -35,7 +38,7 @@ class TaskProcess:
         if new_count < self.process_count:
             # 减少进程数量
             for _ in range(self.process_count - new_count):
-                self.queue.put(None)  # 发送停止信号
+                self.task_queue.put(None)  # 发送停止信号
 
             # 等待进程完成当前任务后退出
             while True:
@@ -62,7 +65,7 @@ class TaskProcess:
             for pid in range(self.process_count, new_count):
                 process = Process(
                     target=sub_process,
-                    args=(pid, self.queue, self.status, self.status_lock, self._shutdown_event)
+                    args=(pid, self.task_queue, self.status, self.status_lock, self._shutdown_event)
                 )
                 process.start()
                 self.processes.append(process)
@@ -73,6 +76,7 @@ class TaskProcess:
         if self.is_running:
             return
         print("MultiProcess Starting...")
+        await self.socket_client.connect_to_server()
         self.ck_config["host"] = CK_HOST
         self.ck_config["port"] = CK_PORT
         self.ck_config["user"] = CK_USER
@@ -84,15 +88,46 @@ class TaskProcess:
             self.status['process_count'] = self.process_count
             for pid in range(self.process_count):
                 self.status[f'P{pid}_Active'] = False
+                # 初始时所有进程都是空闲的
+                self.idle_queue.put_nowait(pid)
 
         self.processes = [
             Process(
                 target=sub_process,
-                args=(pid, self.queue, self.status, self.status_lock, self._shutdown_event, self.ck_config)
+                args=(
+                    pid, self.task_queue, self.idle_queue, self.status,
+                    self.status_lock, self._shutdown_event, self.ck_config
+                )
             ) for pid in range(self.process_count)
         ]
         for process in self.processes:
             process.start()
+        
+        asyncio.create_task(self.get_task())
+
+    async def get_task(self):
+        """任务获取协程"""
+        while self.is_running:
+            try:
+                # 阻塞等待空闲进程
+                idle_pid = self.idle_queue.get()
+                if idle_pid is not None:
+                    # 请求新任务
+                    result = await self.socket_client.call_api(
+                        api='ndsfile/getTask',
+                        data={},
+                        callback_type='socket',
+                        callback_func='task.receive'
+                    )
+                    if not result.get("success"):
+                        # 如果获取失败，将进程ID放回空闲队列
+                        self.idle_queue.put(idle_pid)
+                        await asyncio.sleep(1)  # 失败后等待一段时间再试
+                    await asyncio.sleep(0.1)  # 避免过于频繁的请求
+                    
+            except Exception as e:
+                print(f"Error in get_task: {e}")
+                await asyncio.sleep(1)
 
     async def stop(self):
         """停止所有进程"""
@@ -104,10 +139,10 @@ class TaskProcess:
 
         # 向队列发送停止信号
         for _ in range(len(self.processes)):
-            self.queue.put(None)
+            self.task_queue.put(None)
 
         # 等待所有任务完成
-        while not self.queue.empty():
+        while not self.task_queue.empty():
             await asyncio.sleep(1)
 
         # 等待所有进程完成
@@ -128,12 +163,14 @@ class TaskProcess:
 
 
 # noinspection PyBroadException
-async def sub_process(pid, queue, status, lock, shutdown_event, ck_config):
+async def sub_process(pid, task_queue, idle_queue, status, lock, shutdown_event, ck_config):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     run = True
     backend_client = HttpClient(BACKEND_URL)
+    
     print(f"SubProcess[{pid}] Started.")
+    
     try:
         clickhouse = CKClient(
             host=ck_config["host"],
@@ -146,20 +183,32 @@ async def sub_process(pid, queue, status, lock, shutdown_event, ck_config):
     except Exception as e:
         print(f"Init ClickHouse Error: {str(e)}")
         return
+
     while run:
         try:
             if shutdown_event.is_set():
                 run = False
                 break
+
             with lock:
                 status[f'P{pid}_Active'] = False
-            task = queue.get()
-            if task is None:
+            
+            
+            try:
+                task = task_queue.get_nowait()  # 先尝试非阻塞获取任务
+            except Exception:
+                idle_queue.put(pid)  # 通知主进程该进程空闲
+                task = task_queue.get()  # 阻塞等待任务
+            
+            if task is None:  # 停止信号
                 break
+                
             with lock:
                 status[f'P{pid}_Active'] = True
             await parse_task(task, backend_client, clickhouse)
-        except Exception:
+            
+        except Exception as e:
+            print(f"Process {pid} error: {e}")
             with lock:
                 status[f'P{pid}_Active'] = False
             continue

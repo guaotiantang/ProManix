@@ -1,19 +1,21 @@
+// noinspection JSCheckFunctionSignatures
+
 const express = require('express');
 const router = express.Router();
 const NDSFileList = require('../Models/NDSFileList');
 const { model: NDSFiles } = require('../Models/NDSFiles');
-const fileQueue = require('../Libs/QueueManager');
+const { fileQueue, taskQueue } = require('../Libs/QueueManager');
 const EnbTaskList = require('../Models/EnbTaskList')
-const { Sequelize } = require('../Libs/DataBasePool'); 
+const { Sequelize } = require('../Libs/DataBasePool');
 // 清理NDS相关文件记录
 router.delete('/clean/:nds_id', async (req, res) => {
     try {
         const { nds_id } = req.params;
-        
+
         await NDSFileList.destroy({
             where: { NDSID: nds_id }
         });
-        
+
         res.json({
             message: 'Files cleaned successfully',
             code: 200
@@ -29,11 +31,11 @@ router.delete('/clean/:nds_id', async (req, res) => {
 // 批量添加文件记录
 router.post('/batch', async (req, res) => {
     const { files } = req.body;
-    
+
     if (!Array.isArray(files)) {
-        return res.status(400).json({ 
+        return res.status(400).json({
             code: 400,
-            message: '无效的文件数据' 
+            message: '无效的文件数据'
         });
     }
 
@@ -44,13 +46,13 @@ router.post('/batch', async (req, res) => {
     for (let i = 0; i < files.length; i += BATCH_SIZE) {
         const batch = files.slice(i, i + BATCH_SIZE);
         const taskId = `${Date.now()}_${i}`;
-        
+
         await fileQueue.enqueue({
             type: 'INSERT',
             data: { files: batch },
             taskId
         });
-        
+
         taskIds.push({
             taskId,
             filesCount: batch.length
@@ -70,11 +72,11 @@ router.post('/batch', async (req, res) => {
 // 批量删除文件记录
 router.post('/remove', async (req, res) => {
     const { nds_id, files } = req.body;
-    
+
     if (!nds_id || !Array.isArray(files)) {
-        return res.status(400).json({ 
+        return res.status(400).json({
             code: 400,
-            message: '参数错误' 
+            message: '参数错误'
         });
     }
 
@@ -91,13 +93,13 @@ router.post('/remove', async (req, res) => {
     for (let i = 0; i < fileRecords.length; i += BATCH_SIZE) {
         const batch = fileRecords.slice(i, i + BATCH_SIZE);
         const taskId = `${Date.now()}_${i}`;
-        
+
         await fileQueue.enqueue({
             type: 'DELETE',
             data: { files: batch },
             taskId
         });
-        
+
         taskIds.push({
             taskId,
             filesCount: batch.length
@@ -119,7 +121,7 @@ router.post('/remove', async (req, res) => {
 router.get('/files', async (req, res) => {
     try {
         const { nds_id } = req.query;
-        
+
         if (!nds_id) {
             return res.status(400).json({
                 code: 400,
@@ -148,7 +150,7 @@ router.get('/files', async (req, res) => {
             StartTime: task.StartTime,
             EndTime: task.EndTime
         })) || [];
-        
+
         res.json({
             code: 200,
             data: {
@@ -165,17 +167,11 @@ router.get('/files', async (req, res) => {
     }
 });
 
-// 分发任务接口
-router.get('/dispatch', async (req, res) => {
-    fileQueue.dispatchParseTask()
-    res.status(200).json({code: 200, message: "success"})
 
-})
-
-// 检查 NDS 是否有正在处理的任务
+// 检查 指定NDS 是否有正在处理的任务(添加数据到NDSFileList)
 router.get('/check-tasks/:nds_id', async (req, res) => {
     const { nds_id } = req.params;
-    
+
     if (!nds_id) {
         return res.status(400).json({
             code: 400,
@@ -184,7 +180,7 @@ router.get('/check-tasks/:nds_id', async (req, res) => {
     }
 
     const hasTasks = fileQueue.hasNDSTasks(parseInt(nds_id));
-    
+
     res.json({
         code: 200,
         data: hasTasks
@@ -195,7 +191,7 @@ router.get('/check-tasks/:nds_id', async (req, res) => {
 router.post('/update-parsed', async (req, res) => {
     try {
         const { files } = req.body;
-        
+
         // 验证请求参数
         if (!Array.isArray(files) || files.length === 0) {
             return res.status(400).json({
@@ -215,9 +211,9 @@ router.post('/update-parsed', async (req, res) => {
         }
 
         // 批量更新文件状态
-        const updatePromises = files.map(file => 
+        const updatePromises = files.map(file =>
             NDSFileList.update(
-                { 
+                {
                     Parsed: file.Parsed,
                     UpdateTime: new Date()
                 },
@@ -247,6 +243,24 @@ router.post('/update-parsed', async (req, res) => {
     }
 });
 
+/**
+ * 从任务队列获取一个任务
+ * @returns {Promise<{code: number, message?: string, data?: object}>}
+ */
+async function getTask(_ = null) {
+    try {
+        const task = await taskQueue.getTask();
+        return {
+            code: 200,
+            data: task
+        };
+    } catch (error) {
+        console.error('获取任务失败:', error);
+        return {
+            code: 500,
+            message: error.message
+        };
+    }
+}
 
-
-module.exports = router; 
+module.exports = { router, getTask };
