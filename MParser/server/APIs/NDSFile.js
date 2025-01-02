@@ -250,6 +250,10 @@ router.post('/update-parsed', async (req, res) => {
 async function getTask(_ = null) {
     try {
         const task = await taskQueue.getTask();
+        await NDSFileList.update(
+            { Parsed: 1, UpdateTime: new Date() },
+            { where: { FileHash: task.FileHash }}
+        );
         return {
             code: 200,
             data: task

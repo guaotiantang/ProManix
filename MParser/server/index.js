@@ -22,7 +22,7 @@ app.use(fileUpload({
 
 // 创建 SocketServer 实例
 const socketServer = new SocketServer(server, {
-    logLevel: LogLevel.INFO,
+    logLevel: LogLevel.DEBUG,
     corsOrigin: "*",
     pingTimeout: 10000,
     pingInterval: 5000

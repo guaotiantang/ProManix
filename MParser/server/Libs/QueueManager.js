@@ -4,7 +4,7 @@ const { Mutex } = require('async-mutex');
 const { queue } = require('async');
 const { sequelize, Sequelize } = require('./DataBasePool');
 const NDSFileList = require('../Models/NDSFileList');
-const EnbFileTasks = require('../Models/EnbFileTasks');
+const { model: EnbFileTasks } = require('../Models/EnbFileTasks');
 const { Op } = require('sequelize');
 const crypto = require('crypto');
 
@@ -20,7 +20,7 @@ class AsyncFileOperationQueue {
                 try {
                     await this.handleInsert(operation.data, transaction);
                     await transaction.commit();
-                    await taskQueue.checkAndReplenish();
+                    await taskQueue.replenishQueue();
                     callback(null);
                 } catch (error) {
                     await transaction.rollback();
@@ -385,7 +385,7 @@ class FileOperationQueue {
                 case 'INSERT':
                     await this.handleInsert(operation.data, transaction);
                     // 在 INSERT 操作完成后检查任务队列
-                    await taskQueue.checkAndReplenish();
+                    await taskQueue.replenishQueue();
                     break;
                 case 'DELETE':
                     await this.handleDelete(operation.data, transaction);
@@ -617,65 +617,101 @@ class FileOperationQueue {
 }
 
 
+
+
 class TaskQueue {
     constructor() {
-        // 创建异步队列，并发数设为1确保顺序处理
-        this.taskQueue = queue(async (task, callback) => {
-            try {
-                callback(null, task);
-            } catch (error) {
-                callback(error);
-            }
-        }, 1);
-
-        this.replenishMutex = new Mutex();
-        this.minQueueSize = 50;
+        this.tasks = [];
+        this.waiters = [];
+        this.batchSize = 1000;
     }
 
-    // 补充队列
-    async replenishQueue() {
-        const release = await this.replenishMutex.acquire();
+    /**
+     * 更新任务状态为已处理
+     * @private
+     * @param {string} fileHash - 文件哈希值
+     * @returns {Promise<boolean>} 更新成功返回true，失败返回false
+     */
+    async _updateTaskStatus(fileHash) {
         try {
-            const tasks = await EnbFileTasks.findAll({
-                limit: 1000
-            });
-            
-            // 将任务添加到异步队列
-            for (const task of tasks) {
-                this.taskQueue.push(task);
-            }
-        } finally {
-            release();
+            await NDSFileList.update(
+                { Parsed: 1 },
+                { where: { FileHash: fileHash } }
+            );
+            return true;
+        } catch (error) {
+            console.error('Error updating task status:', error);
+            return false;
         }
     }
 
-    // 获取任务
+    /**
+     * 获取一个任务，如果队列为空则等待
+     * @returns {Promise<Object>} 返回任务数据, 失败返回null
+     */
     async getTask() {
-        // 如果队列长度小于阈值，补充任务
-        if (this.taskQueue.length() < this.minQueueSize) {
-            await this.replenishQueue();
+        // 如果队列中有任务，直接返回
+        if (this.tasks.length > 0) {
+            const task = this.tasks.shift();
+            const success = await this._updateTaskStatus(task.FileHash);
+            return success ? task : null;
         }
 
-        // 返回一个Promise，当有任务时会被解决
-        return new Promise((resolve, reject) => {
-            this.taskQueue.push((err, task) => {
-                if (err) reject(err);
-                else resolve(task);
-            });
+        // 如果队列为空，创建一个Promise等待任务
+        const taskPromise = new Promise(resolve => {
+            this.waiters.push(resolve);
         });
+
+        // 只有第一个等待者触发补充队列
+        if (this.waiters.length === 1) {
+            this.replenishQueue();
+        }
+
+        return taskPromise;
     }
 
-    // 检查并补充队列
-    async checkAndReplenish() {
-        if (this.taskQueue.length() < this.minQueueSize) {
-            await this.replenishQueue();
+    /**
+     * 补充队列数据
+     * @returns {Promise<void>}
+     */
+    async replenishQueue() {
+        // 确保队列为空才补充数据
+        if (this.tasks.length > 0) {
+            return;
         }
+
+        try {
+            const newTasks = await EnbFileTasks.findAll({
+                where: { Parsed: 0 },
+                limit: this.batchSize,
+                raw: true
+            });
+
+            // 再次检查队列是否为空（防止并发）
+            if (this.tasks.length === 0 && newTasks.length > 0) {
+                this.tasks.push(...newTasks);
+
+                // 处理等待中的请求
+                while (this.waiters.length > 0 && this.tasks.length > 0) {
+                    const waiter = this.waiters.shift();
+                    const task = this.tasks.shift();
+                    const success = await this._updateTaskStatus(task.FileHash);
+                    waiter(success ? task : null);
+                }
+            }
+        } catch (error) {
+            console.error('Error fetching tasks from database:', error);
+        }
+    }
+
+    getLength() {
+        return this.tasks.length;
+    }
+
+    getWaitersCount() {
+        return this.waiters.length;
     }
 }
-
-
-
-
 
 // 创建单例
 const fileQueue = new FileOperationQueue();

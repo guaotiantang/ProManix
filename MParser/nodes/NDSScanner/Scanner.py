@@ -243,28 +243,32 @@ class NDSScanner:
                     )
                 except Exception as e:
                     logger.error(f"Failed to delete files: {e}")
-
+            
             # 4. 任务时间范围过滤
             task_times = result['data'].get('times', [])
-            print(task_times) 
             if not task_times:
                 return []  # 没有任务, 无需继续
             # 5. 筛选新文件并匹配时间范围
             new_files = [f for f in files if f['path'] not in existing_files]  # 提取服务器中没有的文件清单
             res_files = []
             for new_file in new_files:
-                new_file_time = datetime.strptime(self._extract_time_from_name(new_file['path']), '%Y-%m-%d %H:%M:%S')
-                if not new_file_time:
+                file_time_str = self._extract_time_from_name(new_file['path'])
+                if not file_time_str:
                     continue
+                    
+                file_time = datetime.strptime(file_time_str, '%Y-%m-%d %H:%M:%S')
                 for task_time in task_times:
-                    start_time = datetime.strptime(task_time['StartTime'], '%Y-%m-%d %H:%M:%S')
-                    end_time = datetime.strptime(task_time['EndTime'], '%Y-%m-%d %H:%M:%S')
-                    if not start_time or not end_time:
+                    try:
+                        start_time = datetime.strptime(task_time['StartTime'], '%Y-%m-%d %H:%M:%S')
+                        end_time = datetime.strptime(task_time['EndTime'], '%Y-%m-%d %H:%M:%S')
+                        
+                        
+                        if start_time <= file_time <= end_time:
+                            res_files.append(new_file)
+                            break
+                    except ValueError as e:
+                        logger.error(f"Error parsing time: {e}")
                         continue
-                    if new_file_time >= start_time and new_file_time <= end_time:
-                        print(f"NewFile: {new_file} Time: {start_time} <= {new_file_time} <= {end_time} Map: {task_time}")
-                        res_files.append(new_file)
-                        break
                     
                     
             return res_files
@@ -326,9 +330,7 @@ class NDSScanner:
                 files = await self.scan_nds(nds_config)
                 if not files:
                     continue
-
                 new_files = await self.diff_files(nds_id, files)
-
                 # 更新状态
                 status.last_scan_time = start_time
                 status.scan_duration = (datetime.now() - start_time).total_seconds()
@@ -452,7 +454,6 @@ class NDSScanner:
 
                     except Exception as e:
                         logger.error(f"Failed to check NDS {config['ID']}: {str(e)}")
-                        continue
 
                 if not valid_configs:
                     logger.warning("No valid NDS connections found")

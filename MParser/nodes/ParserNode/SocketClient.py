@@ -59,7 +59,7 @@ class SocketClient:
         # 创建异步socketio客户端
         self.sio = socketio.AsyncClient(
             reconnection=options.get("reconnection", True),
-            reconnection_attempts=options.get("reconnection_attempts", 3),
+            reconnection_attempts=options.get("reconnection_attempts", -1),
             reconnection_delay=options.get("reconnection_delay", 1),
             reconnection_delay_max=options.get("reconnection_delay_max", 5),
             logger=options.get("logger", False),
@@ -186,7 +186,7 @@ class SocketClient:
 
         try:
             # 如果是HTTP模式，直接使用HTTP
-            if callback_type == "http" and self.http_url and self.callback_url:
+            if callback_type.lower() == "http" and self.http_url and self.callback_url:
                 await self._ensure_http_session()
                 async with self._http_session.post(
                         self.http_url,

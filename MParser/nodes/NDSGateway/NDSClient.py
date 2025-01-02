@@ -146,7 +146,7 @@ class NDSClient:
                         known_hosts=None
                     )
                     self.client = await self.__sftp.start_sftp_client()
-                return
+                return True
             except Exception as e:
                 if attempt == self.RETRY_COUNT - 1:
                     raise NDSConnectError(f"Connect error after {retry} attempts: {str(e)}", level=1)

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from HttpClient import HttpClient
 from SocketClient import SocketClient, LogLevel
 from config import BACKEND_URL, SERVICE_NAME, SERVICE_HOST, SERVICE_PORT, NODE_TYPE
-from api import router, init_processor, shutdown_processor, task_receive
+from api import router, init_processor, shutdown_processor
 import uvicorn
 import multiprocessing
 import psutil
@@ -68,22 +68,22 @@ async def unregister_node():
 async def lifespan(_: FastAPI):
     """应用生命周期管理"""
     # 创建Socket客户端
-    app.state.socket_client = SocketClient(
-        socket_url=f"ws://{BACKEND_URL.replace('http://', '')}",
-        http_url=f"{BACKEND_URL}/api/call",
-        callback_url=f"http://{SERVICE_HOST}:{SERVICE_PORT}/api/callback",
-        options={"log_level": LogLevel.INFO}
-    )
-    app.state.socket_client.register_callback("task.receive", task_receive)
+    # app.state.socket_client = SocketClient(
+    #     socket_url=f"ws://{BACKEND_URL.replace('http://', '')}",
+    #     http_url=f"{BACKEND_URL}/api/call",
+    #     callback_url=f"http://{SERVICE_HOST}:{SERVICE_PORT}/api/callback",
+    #     options={"log_level": LogLevel.INFO}
+    # )
+    # app.state.socket_client.register_callback("task.receive", task_receive)
 
     # 初始化任务处理器
-    await init_processor(cpu_threads, app.state.socket_client)
+    await init_processor(cpu_threads)
     # 注册节点
     await register_node()
 
     yield
     try:
-        await app.state.socket_client.disconnect()
+        # await app.state.socket_client.disconnect()
         await shutdown_processor()
         await unregister_node()
         await backend_client.close()

@@ -6,19 +6,18 @@ import uuid
 import zipfile
 from multiprocessing import Manager
 from typing import List, Dict, Any
-
 import websockets
 from aiomultiprocess import Process
 from clickhouse_driver import Client as CKClient
-
 from HttpClient import HttpClient
-from SocketClient import SocketClient
 from Parser import mro, mdt
 from config import BACKEND_URL, NDS_GATEWAY_URL, CK_HOST, CK_PORT, CK_USER, CK_PASSWD, CK_DB
 
 
+
+
 class TaskProcess:
-    def __init__(self, process_count: int = 2, socket_client: SocketClient = None):
+    def __init__(self, process_count: int = 2):
         self.process_count = process_count
         self.task_queue = Manager().Queue()
         self.idle_queue = Manager().Queue()
@@ -28,7 +27,6 @@ class TaskProcess:
         self.processes: List[Process] = []
         self._shutdown_event = Manager().Event()
         self.ck_config = {}
-        self.socket_client = socket_client
 
     async def set_process_count(self, new_count: int):
         """动态设置进程数量"""
@@ -76,7 +74,7 @@ class TaskProcess:
         if self.is_running:
             return
         print("MultiProcess Starting...")
-        await self.socket_client.connect_to_server()
+        
         self.ck_config["host"] = CK_HOST
         self.ck_config["port"] = CK_PORT
         self.ck_config["user"] = CK_USER
@@ -103,31 +101,6 @@ class TaskProcess:
         for process in self.processes:
             process.start()
         
-        asyncio.create_task(self.get_task())
-
-    async def get_task(self):
-        """任务获取协程"""
-        while self.is_running:
-            try:
-                # 阻塞等待空闲进程
-                idle_pid = self.idle_queue.get()
-                if idle_pid is not None:
-                    # 请求新任务
-                    result = await self.socket_client.call_api(
-                        api='ndsfile/getTask',
-                        data={},
-                        callback_type='socket',
-                        callback_func='task.receive'
-                    )
-                    if not result.get("success"):
-                        # 如果获取失败，将进程ID放回空闲队列
-                        self.idle_queue.put(idle_pid)
-                        await asyncio.sleep(1)  # 失败后等待一段时间再试
-                    await asyncio.sleep(0.1)  # 避免过于频繁的请求
-                    
-            except Exception as e:
-                print(f"Error in get_task: {e}")
-                await asyncio.sleep(1)
 
     async def stop(self):
         """停止所有进程"""

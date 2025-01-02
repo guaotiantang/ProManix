@@ -150,11 +150,7 @@ async def check_nds_connection(config: dict = Body(...)):
 
         # 3. 尝试连接
         try:
-            await client.connect(1)
-            # 4. 检查连接状态
-            is_connected = await client.check_connect()
-
-            if is_connected:
+            if await client.connect(3):
                 return {
                     "code": 200,
                     "message": "Connection successful",
@@ -165,6 +161,7 @@ async def check_nds_connection(config: dict = Body(...)):
                         "port": config['Port']
                     }
                 }
+                
             else:
                 return {
                     "code": 500,

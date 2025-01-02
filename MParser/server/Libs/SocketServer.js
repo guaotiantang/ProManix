@@ -31,7 +31,7 @@ class ApiHandler {
         return this;
     }
 
-    // 处理API请求
+    // 处理API请求 
     async handleRequest(api, data) {
         const handler = this.apiHandlers.get(api);
         if (!handler) {
