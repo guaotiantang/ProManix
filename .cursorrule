@@ -1,0 +1,34 @@
+前端技术栈：Vue3+JavaScript+Elementplus+Axios+Pinia
+后端技术栈：NodeJs + JavaScript+ Axios + MySQL
+节点端技术栈：Python+FastAPI+ClickHouse+lxml+Pandas
+数据通讯规范如下，包括Http通讯和socket通讯，Socket使用的是SocketIo：
+通讯及函数中返回数据格式：
+    { 
+        "code": 200,            // 状态码
+        "message": "success",   // 提示信息
+        "data": {},             // 数据内容
+        "timestamp": 1672531200 // 时间戳（UNIX时间）
+    }
+发送数据格式： 
+    {
+        "action": "string",      // 动作标识
+        "data": {},              // 具体数据内容
+        "meta": {                // 元信息
+            "client_id": "string",   // 客户端标识
+            "timestamp": 1672531200, // 发送时间戳
+            "request_id": "string"   // 请求唯一标识
+        }
+    }
+其他信息：
+MySQL中的数据表的Parsed字段值解释：
+    -2: 数据解释失败
+    -1：数据对应文件不存在
+    0：数据未进行解析
+    1：数据正在解析中
+    2：数据解析完成
+
+代码风格规范：
+• 类名必须使用大驼峰命名法（PascalCase）。
+• 所有函数必须有功能性注释，解释其输入、输出和作用。
+• 复杂逻辑部分需要详细注释，说明每个步骤的目的。
+• 对于类、模块等较大代码块，必须生成类级别或模块级别的注释。
